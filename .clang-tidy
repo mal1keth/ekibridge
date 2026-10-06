@@ -1,0 +1,3 @@
+Checks: 'bugprone-*,cert-*,cppcoreguidelines-*,performance-*,modernize-*,readability-*,-modernize-use-trailing-return-type,-readability-magic-numbers,-cppcoreguidelines-avoid-magic-numbers,-cppcoreguidelines-pro-bounds-pointer-arithmetic,-cppcoreguidelines-pro-type-reinterpret-cast,-cppcoreguidelines-avoid-c-arrays,-modernize-avoid-c-arrays,-readability-identifier-length'
+WarningsAsErrors: '*'
+HeaderFilterRegex: 'core-cpp/.*'

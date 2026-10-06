@@ -1,0 +1,33 @@
+# cargo-deny policy. Run from the repository root:  cargo deny check
+
+[graph]
+# Check the dependencies of every feature, so the optional pkcs11 and pq crates are covered too.
+all-features = true
+
+[advisories]
+# Uses the default RustSec advisory database; no advisories are ignored.
+
+[licenses]
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Zlib",
+  "MPL-2.0",
+]
+confidence-threshold = 0.8
+
+[bans]
+# No crates are banned. Duplicate versions only produce a warning.
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+# Only crates.io; no git dependencies.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

@@ -1,0 +1,17 @@
+# build output
+target/
+build/
+build-*/
+compile_commands.json
+.cache/
+
+# throwaway SoftHSM2 token used by the PKCS#11 tests
+.softhsm/
+
+# editor and OS noise
+.DS_Store
+
+# coverage and fuzzing artifacts
+*.profraw
+*.profdata
+**/fuzz/artifacts/
