@@ -1,0 +1,100 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "description": "Shared settings. OPENSSL_ROOT_DIR is taken from the environment when set; on macOS core-cpp/CMakeLists.txt falls back to the Homebrew prefix when it is empty.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "EKI_BUILD_TESTS": "ON",
+        "OPENSSL_ROOT_DIR": "$penv{OPENSSL_ROOT_DIR}"
+      }
+    },
+    {
+      "name": "llvm-tools",
+      "hidden": true,
+      "description": "Puts Homebrew LLVM first on PATH. Apple clang has no libFuzzer and no clang-tidy. The directories are absent on Linux, where the system clang is used.",
+      "environment": {
+        "PATH": "/opt/homebrew/opt/llvm/bin${pathListSep}/usr/local/opt/llvm/bin${pathListSep}$penv{PATH}"
+      }
+    },
+    {
+      "name": "default",
+      "inherits": "base",
+      "displayName": "Default",
+      "description": "RelWithDebInfo with tests",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    },
+    {
+      "name": "release",
+      "inherits": "base",
+      "displayName": "Release",
+      "description": "Optimized build with tests",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "asan",
+      "inherits": "base",
+      "displayName": "ASan + UBSan",
+      "description": "Debug build with AddressSanitizer and UndefinedBehaviorSanitizer",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "EKI_SANITIZE": "ON"
+      }
+    },
+    {
+      "name": "fuzz",
+      "inherits": ["base", "llvm-tools"],
+      "displayName": "libFuzzer",
+      "description": "Builds the libFuzzer targets with clang (Homebrew LLVM on macOS)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "EKI_BUILD_FUZZ": "ON"
+      }
+    },
+    {
+      "name": "tidy",
+      "inherits": ["base", "llvm-tools"],
+      "displayName": "clang-tidy",
+      "description": "Runs clang-tidy on every C++ source during the build (Homebrew LLVM on macOS)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_CLANG_TIDY": "clang-tidy;-p=${sourceDir}/build/${presetName}"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "default", "configurePreset": "default" },
+    { "name": "release", "configurePreset": "release" },
+    { "name": "asan", "configurePreset": "asan" },
+    { "name": "fuzz", "configurePreset": "fuzz" },
+    { "name": "tidy", "configurePreset": "tidy" }
+  ],
+  "testPresets": [
+    {
+      "name": "test-base",
+      "hidden": true,
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error" }
+    },
+    { "name": "default", "inherits": "test-base", "configurePreset": "default" },
+    { "name": "release", "inherits": "test-base", "configurePreset": "release" },
+    {
+      "name": "asan",
+      "inherits": "test-base",
+      "configurePreset": "asan",
+      "environment": {
+        "ASAN_OPTIONS": "strict_string_checks=1:detect_stack_use_after_return=1",
+        "UBSAN_OPTIONS": "print_stacktrace=1:halt_on_error=1"
+      }
+    },
+    { "name": "fuzz", "inherits": "test-base", "configurePreset": "fuzz" },
+    { "name": "tidy", "inherits": "test-base", "configurePreset": "tidy" }
+  ]
+}

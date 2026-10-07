@@ -1,0 +1,11 @@
+[package]
+name = "ekicore-abi"
+description = "Shared C ABI types and constants for libekicore (C++) and libekicore_rs (Rust)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ekicore_abi"

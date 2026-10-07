@@ -1,0 +1,40 @@
+[package]
+name = "ekicore-rs"
+description = "Rust implementation of the ekicore C ABI, built on RustCrypto."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ekicore_rs"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[features]
+default = ["pkcs11"]
+# PKCS#11 key store backend (cryptoki).
+pkcs11 = ["dep:cryptoki"]
+# Hybrid X25519 + ML-KEM-768 key exchange.
+pq = ["dep:ml-kem", "dep:x25519-dalek"]
+
+[dependencies]
+aes-gcm = "=0.11.1"
+aes-kw = "=0.3.1"
+chacha20poly1305 = "=0.11.0"
+cryptoki = { version = "=0.12.1", optional = true }
+ekicore-abi = { path = "../abi" }
+getrandom = "=0.4.3"
+hkdf = "=0.13.0"
+hmac = "=0.13.0"
+ml-kem = { version = "=0.3.3", optional = true }
+p256 = { version = "=0.14.0", features = ["ecdsa"] }
+secrecy = "=0.10.3"
+sha2 = "=0.11.1"
+subtle = "=2.6.1"
+x25519-dalek = { version = "=3.0.0", optional = true }
+zeroize = { version = "=1.9.1", features = ["derive"] }
+
+[dev-dependencies]
+hex = "=0.4.3"
+proptest = "=1.12.0"

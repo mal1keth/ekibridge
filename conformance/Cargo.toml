@@ -1,0 +1,11 @@
+[package]
+name = "ekicore-conformance"
+description = "Conformance harness that loads libekicore and libekicore_rs and compares them."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ekicore_conformance"

@@ -1,0 +1,37 @@
+# Produces include/ekicore.h from the ekicore-abi crate and core-rs/src/ffi.rs.
+# Run from the repository root:
+#   cbindgen --config core-rs/cbindgen.toml --crate ekicore-rs --output include/ekicore.h
+# scripts/check-header.sh does that into a temporary file and diffs it against the committed copy.
+
+language = "C"
+cpp_compat = true
+include_version = false
+include_guard = "EKICORE_H"
+usize_is_size_t = true
+documentation_style = "doxy"
+style = "both"
+
+header = """
+/*
+ * ekicore C ABI shared by libekicore (C++) and libekicore_rs (Rust); generated from the Rust
+ * declarations by cbindgen; do not edit by hand.
+ */"""
+
+# The export macro goes after the include guard and the system includes.
+after_includes = """
+
+#if defined(_WIN32)
+#define EKI_API
+#elif defined(__GNUC__) || defined(__clang__)
+#define EKI_API __attribute__((visibility("default")))
+#else
+#define EKI_API
+#endif"""
+
+[fn]
+prefix = "EKI_API"
+
+[parse]
+parse_deps = true
+include = ["ekicore-abi"]
+extra_bindings = ["ekicore-abi"]
