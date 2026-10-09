@@ -1,0 +1,105 @@
+name: cpp
+
+# libekicore: release build and unit tests on three toolchains, a sanitizer build, and clang-tidy.
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: release (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu gcc
+            os: ubuntu-24.04
+            cc: gcc
+            cxx: g++
+          - name: ubuntu clang
+            os: ubuntu-24.04
+            cc: clang
+            cxx: clang++
+          - name: macos apple-clang
+            os: macos-15
+            cc: ""
+            cxx: ""
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: install dependencies (ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libssl-dev
+      - name: install dependencies (macos)
+        if: runner.os == 'macOS'
+        run: |
+          brew install ninja openssl@3
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+      - name: select compiler
+        if: matrix.cc != ''
+        env:
+          MATRIX_CC: ${{ matrix.cc }}
+          MATRIX_CXX: ${{ matrix.cxx }}
+        run: |
+          echo "CC=$MATRIX_CC" >> "$GITHUB_ENV"
+          echo "CXX=$MATRIX_CXX" >> "$GITHUB_ENV"
+      - name: configure
+        run: cmake --preset release
+      - name: build
+        run: cmake --build --preset release
+      - name: test
+        run: ctest --preset release --output-on-failure
+
+  asan:
+    name: asan (ubuntu clang)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@v7
+      - name: install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libssl-dev clang
+      # Older sanitizer runtimes crash at startup under the runner kernel's 32-bit mmap
+      # randomisation; 28 bits is the long-standing default and works with every version.
+      - name: limit mmap randomisation for ASan
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+      - name: configure
+        run: cmake --preset asan
+      - name: build
+        run: cmake --build --preset asan
+      - name: test
+        run: ctest --preset asan --output-on-failure
+
+  tidy:
+    name: clang-tidy (ubuntu clang)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@v7
+      - name: install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libssl-dev clang clang-tidy
+      - name: clang-tidy version
+        run: clang-tidy --version
+      - name: configure
+        run: cmake --preset tidy
+      # clang-tidy runs as part of the compile of every C++ source; any finding fails the build.
+      - name: build
+        run: cmake --build --preset tidy

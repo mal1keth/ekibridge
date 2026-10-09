@@ -1,0 +1,46 @@
+name: header
+
+# include/ekicore.h must be exactly what the pinned cbindgen generates from the Rust declarations,
+# must compile as C11 and C++20, and both libraries must export nothing outside eki_*.
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Keep in step with CBINDGEN_VERSION in scripts/check-header.sh.
+  CBINDGEN_VERSION: 0.29.4
+
+jobs:
+  header:
+    name: header and exports
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libssl-dev
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: install cbindgen
+        run: cargo install cbindgen --version "$CBINDGEN_VERSION" --locked
+      - name: check header
+        run: scripts/check-header.sh
+      - name: build libekicore
+        run: |
+          cmake --preset release -DEKI_BUILD_TESTS=OFF
+          cmake --build --preset release --target ekicore
+      - name: build libekicore_rs
+        run: cargo build -p ekicore-rs --release
+      - name: check exports
+        run: scripts/check-exports.sh build/release/core-cpp/libekicore.so target/release/libekicore_rs.so

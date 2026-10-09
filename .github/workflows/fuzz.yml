@@ -1,0 +1,94 @@
+name: fuzz
+
+# Short fuzzing runs of every target, Rust (cargo-fuzz) and C++ (libFuzzer). Each step skips
+# itself until the fuzz targets exist (added by the fuzzing package).
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_FUZZ_VERSION: 0.13.2
+
+jobs:
+  rust:
+    name: cargo-fuzz
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@v2
+        if: hashFiles('core-rs/fuzz/Cargo.toml') != ''
+        with:
+          workspaces: core-rs/fuzz -> target
+      - name: install cargo-fuzz
+        if: hashFiles('core-rs/fuzz/Cargo.toml') != ''
+        run: cargo install cargo-fuzz --version "$CARGO_FUZZ_VERSION" --locked
+      - name: run targets
+        run: |
+          if [ ! -d core-rs/fuzz ]; then
+            echo "core-rs/fuzz not present yet; nothing to run"
+            exit 0
+          fi
+          for t in core-rs/fuzz/fuzz_targets/*.rs; do
+            [ -e "$t" ] || continue
+            name=$(basename "$t" .rs)
+            echo "::group::$name"
+            cargo +nightly fuzz run --fuzz-dir core-rs/fuzz "$name" -- -runs=200000 -max_total_time=120
+            echo "::endgroup::"
+          done
+
+  cpp:
+    name: libFuzzer (clang)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - name: install dependencies
+        if: hashFiles('core-cpp/fuzz/CMakeLists.txt') != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libssl-dev clang libclang-rt-18-dev
+      # Older sanitizer runtimes crash at startup under the runner kernel's 32-bit mmap
+      # randomisation; 28 bits is the long-standing default and works with every version.
+      - name: limit mmap randomisation for sanitizers
+        if: hashFiles('core-cpp/fuzz/CMakeLists.txt') != ''
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+      - name: build and run targets
+        run: |
+          if [ ! -f core-cpp/fuzz/CMakeLists.txt ]; then
+            echo "core-cpp/fuzz not present yet; nothing to run"
+            exit 0
+          fi
+          cmake --preset fuzz
+          cmake --build --preset fuzz
+          found=0
+          while IFS= read -r bin; do
+            found=1
+            name=$(basename "$bin")
+            echo "::group::$name"
+            corpus=()
+            if [ -d "core-cpp/fuzz/corpus/$name" ]; then
+              corpus=("core-cpp/fuzz/corpus/$name")
+            fi
+            "$bin" -runs=200000 "${corpus[@]}"
+            echo "::endgroup::"
+          done < <(find build/fuzz -type f -perm -u+x -name 'fuzz_*' | sort)
+          if [ "$found" -eq 0 ]; then
+            echo "error: no fuzz_* binaries under build/fuzz" >&2
+            exit 1
+          fi

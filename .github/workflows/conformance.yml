@@ -1,0 +1,59 @@
+name: conformance
+
+# Loads libekicore and libekicore_rs side by side and checks they agree byte for byte and status
+# for status. Only the modules listed in conformance/ci-modules.txt run here.
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  conformance:
+    name: conformance (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: install dependencies (ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libssl-dev softhsm2 opensc
+      - name: install dependencies (macos)
+        if: runner.os == 'macOS'
+        run: |
+          brew install ninja openssl@3 softhsm opensc
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      # The softhsm-init exports live only in this shell, so the harness runs in the same step.
+      # scripts/run-conformance.sh is added by the conformance harness package; until then the
+      # step only reports that it is missing.
+      - name: run conformance
+        run: |
+          # Not followed by shellcheck: the script's final exit only runs when it is executed directly.
+          # shellcheck source=/dev/null
+          source scripts/softhsm-init.sh
+          if [ -x scripts/run-conformance.sh ]; then
+            scripts/run-conformance.sh --with-pkcs11
+          else
+            echo "scripts/run-conformance.sh not present yet; nothing to run"
+          fi

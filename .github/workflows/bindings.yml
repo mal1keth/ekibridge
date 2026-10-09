@@ -1,0 +1,23 @@
+name: bindings
+
+# Placeholder: the UniFFI and wasm-bindgen bindings and their tests arrive with the bindings
+# package, which also turns this workflow on for pushes and pull requests.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bindings:
+    name: bindings
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: not yet
+        run: echo "bindings/ (UniFFI and wasm) is not part of the repository yet; nothing to build"

@@ -1,0 +1,49 @@
+name: pq
+
+# The hybrid X25519 + ML-KEM-768 KEM. Needs OpenSSL >= 3.5, which on the runners only Homebrew
+# provides, so this runs on macOS only.
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  pq:
+    name: pq (macos-15)
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: install dependencies
+        run: |
+          brew install openssl@3 ninja
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: rust tests with pq
+        run: cargo test -p ekicore-rs --features pq
+      # A build directory of its own, so the cache of the plain release build is never mixed up.
+      - name: configure C++ with pq
+        run: cmake --preset release -B build/release-pq -DEKI_WITH_PQ=ON
+      - name: build C++ with pq
+        run: cmake --build build/release-pq
+      - name: test C++ with pq
+        run: ctest --test-dir build/release-pq --output-on-failure
+      # scripts/run-conformance.sh is added by the conformance harness package.
+      - name: conformance pq module
+        run: |
+          if [ -x scripts/run-conformance.sh ]; then
+            EKI_PQ=1 scripts/run-conformance.sh pq
+          else
+            echo "scripts/run-conformance.sh not present yet; nothing to run"
+          fi

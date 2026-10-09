@@ -1,0 +1,46 @@
+name: bench
+
+# Benchmarks both libraries through the C ABI on demand. Shared runners are noisy: use the numbers
+# for the ratio between the libraries, not as absolute figures.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bench:
+    name: bench
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - name: install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libssl-dev
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      # scripts/bench.sh is added by the benchmark package.
+      - name: run benchmarks
+        run: |
+          if [ -x scripts/bench.sh ]; then
+            scripts/bench.sh
+          else
+            echo "scripts/bench.sh not present yet; nothing to run"
+          fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bench-results
+          path: bench-results/
+          if-no-files-found: warn
