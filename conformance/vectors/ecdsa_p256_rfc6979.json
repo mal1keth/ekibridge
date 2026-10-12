@@ -1,0 +1,21 @@
+{
+  "source": "RFC 6979 Appendix A.2.5 (P-256): public key U = (Ux, Uy) as SEC1 uncompressed, SHA-256 signatures r || s for messages \"sample\" and \"test\"",
+  "url": "https://www.rfc-editor.org/rfc/rfc6979.txt",
+  "license": "IETF Trust Legal Provisions; values extracted programmatically from the RFC text",
+  "cases": [
+    {
+      "name": "RFC 6979 A.2.5 SHA-256 \"sample\"",
+      "public_key": "0460fed4ba255a9d31c961eb74c6356d68c049b8923b61fa6ce669622e60f29fb67903fe1008b8bc99a41ae9e95628bc64f2f1b20c2d7e9f5177a3c294d4462299",
+      "msg": "73616d706c65",
+      "sig": "efd48b2aacb6a8fd1140dd9cd45e81d69d2c877b56aaf991c34d0ea84eaf3716f7cb1c942d657c41d436c7a1b6e29f65f3e900dbb9aff4064dc4ab2f843acda8",
+      "result": "valid"
+    },
+    {
+      "name": "RFC 6979 A.2.5 SHA-256 \"test\"",
+      "public_key": "0460fed4ba255a9d31c961eb74c6356d68c049b8923b61fa6ce669622e60f29fb67903fe1008b8bc99a41ae9e95628bc64f2f1b20c2d7e9f5177a3c294d4462299",
+      "msg": "74657374",
+      "sig": "f1abb023518351cd71d881567b1ea663ed3efcf6c5132b354f28d3b0b7d38367019f4113742a2b14bd25926b49c649155f267e60d3814b4c0cc84250e46f0083",
+      "result": "valid"
+    }
+  ]
+}
