@@ -35,6 +35,19 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     -Wall -Wextra -Wpedantic -Werror -Wshadow -Wconversion -Wsign-conversion)
 endif()
 
+# The cryptographic primitives (namespace ekicore, declared in ekicore/primitives.hpp) are an object
+# library: they are compiled once and linked both into libekicore and into the unit tests. The tests
+# cannot reach them through the shared library, which exports nothing but the eki_* functions.
+add_library(ekicore_primitives OBJECT
+  src/hmac.cpp
+  src/hkdf.cpp
+  src/aead.cpp
+  src/ecdsa.cpp)
+set_target_properties(ekicore_primitives PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(ekicore_primitives
+  PUBLIC "${PROJECT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_link_libraries(ekicore_primitives PUBLIC OpenSSL::Crypto PRIVATE ekicore_warnings)
+
 add_library(ekicore SHARED
   src/version.cpp
   src/ffi.cpp)
@@ -53,21 +66,27 @@ endforeach()
 
 # Only the eki_* functions are exported: the header marks them EKI_API, everything else is hidden.
 # Exceptions stay enabled because the implementation may use them; the extern "C" layer catches them.
-target_compile_options(ekicore PRIVATE
-  -fvisibility=hidden
-  -fvisibility-inlines-hidden
-  -fexceptions)
+foreach(_eki_target IN ITEMS ekicore ekicore_primitives)
+  target_compile_options(${_eki_target} PRIVATE
+    -fvisibility=hidden
+    -fvisibility-inlines-hidden
+    -fexceptions)
+endforeach()
 
-target_link_libraries(ekicore PRIVATE ekicore_warnings OpenSSL::Crypto)
+target_link_libraries(ekicore PRIVATE ekicore_primitives ekicore_warnings OpenSSL::Crypto)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT EKI_SANITIZE)
-  target_compile_options(ekicore PRIVATE
-    -fstack-protector-strong
-    # _FORTIFY_SOURCE needs optimization; glibc warns (and -Werror fails) in unoptimized builds.
-    "$<$<CONFIG:Release,RelWithDebInfo,MinSizeRel>:-U_FORTIFY_SOURCE;-D_FORTIFY_SOURCE=2>")
+  foreach(_eki_target IN ITEMS ekicore ekicore_primitives)
+    target_compile_options(${_eki_target} PRIVATE
+      -fstack-protector-strong
+      # _FORTIFY_SOURCE needs optimization; glibc warns (and -Werror fails) in unoptimized builds.
+      "$<$<CONFIG:Release,RelWithDebInfo,MinSizeRel>:-U_FORTIFY_SOURCE;-D_FORTIFY_SOURCE=2>")
+  endforeach()
   target_link_options(ekicore PRIVATE -Wl,-z,relro,-z,now)
 endif()
 
 if(EKI_BUILD_TESTS)
   add_subdirectory(tests)
+  # The primitive tests call the internal C++ API directly, so they get their own copy of it.
+  target_link_libraries(ekicore_tests PRIVATE ekicore_primitives)
 endif()
