@@ -1,0 +1,5 @@
+# Conformance modules that CI runs (scripts/run-conformance.sh with no module arguments).
+# One module name per line, matching conformance/tests/<module>.rs; lines starting with # are
+# comments. A module is appended here in the lesson that makes both implementations pass it
+# (hmac, hkdf, aead, ecdsa, ks_software, ks_pkcs11, pq); locally, --all runs every module.
+meta

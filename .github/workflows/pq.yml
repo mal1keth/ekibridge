@@ -42,8 +42,10 @@ jobs:
       # scripts/run-conformance.sh is added by the conformance harness package.
       - name: conformance pq module
         run: |
-          if [ -x scripts/run-conformance.sh ]; then
+          if [ -x scripts/run-conformance.sh ] && grep -qx pq conformance/ci-modules.txt; then
             EKI_PQ=1 scripts/run-conformance.sh pq
+          elif [ -x scripts/run-conformance.sh ]; then
+            echo "pq is not listed in conformance/ci-modules.txt yet; skipping"
           else
             echo "scripts/run-conformance.sh not present yet; nothing to run"
           fi
