@@ -24,4 +24,12 @@ file(GLOB EKI_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*_test
 add_executable(ekicore_tests ${EKI_TEST_SOURCES})
 target_link_libraries(ekicore_tests PRIVATE ekicore ekicore_warnings GTest::gtest_main)
 
-gtest_discover_tests(ekicore_tests)
+# The tests cannot see the library's private EKI_WITH_* definitions, so the values are forwarded.
+target_compile_definitions(ekicore_tests PRIVATE
+  EKI_TEST_WITH_PKCS11=$<BOOL:${EKI_WITH_PKCS11}>
+  EKI_TEST_WITH_PQ=$<BOOL:${EKI_WITH_PQ}>)
+
+# The PKCS#11 tests share one SoftHSM2 token, and login state is per process: ctest must not run
+# them in parallel with each other. The lock covers every discovered test, which is simplest and
+# cheap (the whole suite runs in well under a second).
+gtest_discover_tests(ekicore_tests PROPERTIES RESOURCE_LOCK softhsm)
