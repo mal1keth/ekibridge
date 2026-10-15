@@ -50,12 +50,13 @@
       "name": "fuzz",
       "inherits": ["base", "llvm-tools"],
       "displayName": "libFuzzer",
-      "description": "Builds the libFuzzer targets with clang (Homebrew LLVM on macOS)",
+      "description": "Builds the libFuzzer targets with clang (Homebrew LLVM on macOS); the library itself gets ASan and UBSan",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "CMAKE_C_COMPILER": "clang",
         "CMAKE_CXX_COMPILER": "clang++",
-        "EKI_BUILD_FUZZ": "ON"
+        "EKI_BUILD_FUZZ": "ON",
+        "EKI_SANITIZE": "ON"
       }
     },
     {
