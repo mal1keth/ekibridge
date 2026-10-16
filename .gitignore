@@ -15,3 +15,6 @@ compile_commands.json
 *.profraw
 *.profdata
 **/fuzz/artifacts/
+
+# benchmark output
+bench-results/
