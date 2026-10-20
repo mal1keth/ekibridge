@@ -10,13 +10,15 @@ single C ABI, with a conformance harness that proves the two are interchangeable
 [![fuzz](https://github.com/mal1keth/ekibridge/actions/workflows/fuzz.yml/badge.svg)](https://github.com/mal1keth/ekibridge/actions/workflows/fuzz.yml)
 [![pq](https://github.com/mal1keth/ekibridge/actions/workflows/pq.yml/badge.svg)](https://github.com/mal1keth/ekibridge/actions/workflows/pq.yml)
 
-**Status: in progress, started October 2026.** The ABI, both build systems and CI are in place;
-apart from the version and status-name functions, every function is still a stub that returns
-`EKI_ERR_UNSUPPORTED`.
+**Status: in progress, started October 2026.** The ABI, both build systems, CI, the test suites,
+the conformance harness and vectors, the fuzz and benchmark harnesses and the interop callers are
+in place, and the C++ primitives are implemented behind the internal API. Every exported function
+except the version and status-name functions is still a stub that returns `EKI_ERR_UNSUPPORTED`;
+the disabled tests are the specification the implementations are written against.
 
 | Module | C++ | Rust | Conformance | Fuzz |
 |---|---|---|---|---|
-| ABI, build, CI | done | done | planned | n/a |
+| ABI, build, CI | done | done | metadata module | n/a |
 | HMAC-SHA256 | planned | planned | planned | planned |
 | HKDF-SHA256 | planned | planned | planned | planned |
 | AEAD (AES-256-GCM, ChaCha20-Poly1305) | planned | planned | planned | planned |
@@ -24,7 +26,7 @@ apart from the version and status-name functions, every function is still a stub
 | Key store, software backend | planned | planned | planned | planned |
 | Key store, PKCS#11 backend | planned | planned | planned | planned |
 | Hybrid KEM (X25519 + ML-KEM-768) | planned | planned | planned | planned |
-| Interop callers | planned | planned | n/a | n/a |
+| Interop callers | written | written | n/a | n/a |
 | Bindings (UniFFI, wasm) | n/a | planned | n/a | n/a |
 
 ## What it is
@@ -133,8 +135,7 @@ This creates a throwaway token labelled `ekibridge` under `.softhsm/` (user PIN 
 
 ### Conformance
 
-`scripts/run-conformance.sh` is added with the conformance harness. It builds both libraries in
-release mode and runs the modules listed in `conformance/ci-modules.txt`:
+`scripts/run-conformance.sh` builds both libraries in release mode and runs the modules listed in `conformance/ci-modules.txt`:
 
 ```sh
 scripts/run-conformance.sh                 # modules enabled in CI
