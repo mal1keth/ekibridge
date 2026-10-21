@@ -11,6 +11,9 @@ compile_commands.json
 # editor and OS noise
 .DS_Store
 
+# personal study notes, kept out of the repository
+notes/
+
 # coverage and fuzzing artifacts
 *.profraw
 *.profdata
