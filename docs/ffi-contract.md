@@ -48,9 +48,17 @@ For each input pair `(const uint8_t *p, size_t n)`:
 The same rule applies to outputs whose size is given by an input length: `ct_out` (`pt_len`),
 `pt_out` (`ct_len`), `okm` (`okm_len`).
 
-Everything else must be non-NULL regardless of lengths: fixed-size inputs (`tag`, `public_key`,
-`sig`, and the KEM's `pk`, `sk`, `ct`), fixed-size outputs, the `eki_ks *` handle, key id pointers,
-`config`, `label`, and the `out` handle pointer of `eki_ks_open`.
+Everything else must be non-NULL regardless of lengths: fixed-size inputs (the 16-byte `tag` of
+`eki_aead_open`, `public_key`, `sig`, and the KEM's `pk`, `sk`, `ct`), fixed-size outputs, the
+`eki_ks *` handle, key id pointers, `config`, `label`, and the `out` handle pointer of
+`eki_ks_open`. The `tag` of `eki_hmac_sha256_verify` comes with `tag_len` and follows the pair rule
+above.
+
+A non-NULL pointer must be valid for the length that accompanies it, or for its fixed size, until
+the call returns. There is one exception. When a length exceeds the documented maximum of its
+parameter (`EKI_AEAD_MAX_LEN` for `pt_len` and `ct_len`, `EKI_HKDF_MAX_INPUT_LEN` for `ikm_len`,
+`salt_len` and `info_len`, `EKI_HKDF_MAX_OKM_LEN` for `okm_len`), the call fails without reading or
+writing that buffer, so the buffer does not have to be that large.
 
 Input and output buffers must not overlap. In-place AEAD is not supported.
 

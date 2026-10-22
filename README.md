@@ -12,14 +12,15 @@ single C ABI, with a conformance harness that proves the two are interchangeable
 
 **Status: in progress, started October 2026.** The ABI, both build systems, CI, the test suites,
 the conformance harness and vectors, the fuzz and benchmark harnesses and the interop callers are
-in place, and the C++ primitives are implemented behind the internal API. Every exported function
-except the version and status-name functions is still a stub that returns `EKI_ERR_UNSUPPORTED`;
-the disabled tests are the specification the implementations are written against.
+in place, and the C++ primitives are implemented behind the internal API. The exported functions
+are being implemented module by module; the table shows where each one stands. A function that is
+not implemented yet is a stub that returns `EKI_ERR_UNSUPPORTED` and its tests are disabled: the
+disabled tests are the specification the implementations are written against.
 
 | Module | C++ | Rust | Conformance | Fuzz |
 |---|---|---|---|---|
 | ABI, build, CI | done | done | metadata module | n/a |
-| HMAC-SHA256 | planned | planned | planned | planned |
+| HMAC-SHA256 | planned | done | planned | planned |
 | HKDF-SHA256 | planned | planned | planned | planned |
 | AEAD (AES-256-GCM, ChaCha20-Poly1305) | planned | planned | planned | planned |
 | ECDSA P-256 verify | planned | planned | planned | planned |

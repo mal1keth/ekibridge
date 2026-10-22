@@ -107,7 +107,6 @@ fn verify(key: In, msg: In, tag: In) -> eki_status {
 }
 
 #[test]
-#[ignore = "lesson L1"]
 fn rfc4231_vectors() {
     for v in RFC4231 {
         let (key, data, mac) = (hex(v.key), hex(v.data), hex(v.mac));
@@ -119,7 +118,6 @@ fn rfc4231_vectors() {
 }
 
 #[test]
-#[ignore = "lesson L1"]
 fn rfc4231_verify_accepts_full_tags() {
     for v in RFC4231.iter().filter(|v| v.case != 5) {
         let (key, data, mac) = (hex(v.key), hex(v.data), hex(v.mac));
@@ -133,7 +131,6 @@ fn rfc4231_verify_accepts_full_tags() {
 }
 
 #[test]
-#[ignore = "lesson L1"]
 fn verify_rejects_every_single_bit_flip() {
     let v = &RFC4231[1];
     let (key, data, mac) = (hex(v.key), hex(v.data), hex(v.mac));
@@ -149,7 +146,6 @@ fn verify_rejects_every_single_bit_flip() {
 }
 
 #[test]
-#[ignore = "lesson L1"]
 fn verify_wrong_message_is_auth_failed() {
     let v = &RFC4231[0];
     let (key, mac) = (hex(v.key), hex(v.mac));
@@ -162,7 +158,6 @@ fn verify_wrong_message_is_auth_failed() {
 // --- §4.4 rows: hmac ----------------------------------------------------------------------
 
 #[test]
-#[ignore = "lesson L1"]
 fn key_len_zero_is_invalid_and_zeroes_out() {
     for key in [In::Null(0), In::Bytes(&[])] {
         let mut out = prefill(32);
@@ -176,7 +171,6 @@ fn key_len_zero_is_invalid_and_zeroes_out() {
 }
 
 #[test]
-#[ignore = "lesson L1"]
 fn msg_null_len_zero_is_ok() {
     let key = hex(RFC4231[0].key);
     let expected = hex(EMPTY_MSG_MAC);
@@ -192,7 +186,6 @@ fn msg_null_len_zero_is_ok() {
 }
 
 #[test]
-#[ignore = "lesson L1"]
 fn null_pointers() {
     let key = hex(RFC4231[0].key);
     let mut out = prefill(32);
@@ -216,7 +209,6 @@ fn null_pointers() {
 }
 
 #[test]
-#[ignore = "lesson L1"]
 fn null_pointer_comes_before_length_checks() {
     // `key_len 0` alone is INVALID_ARGUMENT, but a NULL `out` is detected first (§4.2 step 1).
     assert_eq!(
@@ -228,7 +220,6 @@ fn null_pointer_comes_before_length_checks() {
 // --- §4.4 rows: hmac_verify ---------------------------------------------------------------
 
 #[test]
-#[ignore = "lesson L1"]
 fn verify_tag_len_not_32_is_invalid() {
     let v = &RFC4231[0];
     let (key, data, mac) = (hex(v.key), hex(v.data), hex(v.mac));
@@ -249,7 +240,6 @@ fn verify_tag_len_not_32_is_invalid() {
 }
 
 #[test]
-#[ignore = "lesson L1"]
 fn verify_key_len_zero_is_invalid_before_tag_len() {
     let mac = hex(RFC4231[0].mac);
     assert_eq!(
@@ -263,7 +253,6 @@ fn verify_key_len_zero_is_invalid_before_tag_len() {
 }
 
 #[test]
-#[ignore = "lesson L1"]
 fn verify_null_pointers() {
     let v = &RFC4231[0];
     let (key, data, mac) = (hex(v.key), hex(v.data), hex(v.mac));
@@ -287,7 +276,6 @@ fn verify_null_pointers() {
 }
 
 #[test]
-#[ignore = "lesson L1"]
 fn verify_empty_message() {
     let key = hex(RFC4231[0].key);
     let mac = hex(EMPTY_MSG_MAC);
