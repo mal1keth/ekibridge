@@ -3,3 +3,4 @@
 # comments. A module is appended here in the lesson that makes both implementations pass it
 # (hmac, hkdf, aead, ecdsa, ks_software, ks_pkcs11, pq); locally, --all runs every module.
 meta
+hmac

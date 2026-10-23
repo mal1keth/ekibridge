@@ -1,6 +1,6 @@
 // The stateless functions of the C ABI (HMAC, HKDF, AEAD, ECDSA verify), called through
-// <ekicore.h> exactly as a C caller would. Disabled until ffi.cpp is wired to the primitives in
-// lesson L2; the C++ primitives themselves are tested directly in primitives_*_test.cpp.
+// <ekicore.h> exactly as a C caller would; the C++ primitives themselves are tested directly in
+// primitives_*_test.cpp.
 //
 // Mirrors core-rs/tests/ffi_{hmac,hkdf,aead,ecdsa}.rs: the same vectors (plan §4.5) and the same
 // rows (plan §4.4), with validation order and zero-on-error from §4.2.
@@ -117,8 +117,7 @@ constexpr std::array<HmacVector, 7> kRfc4231{
 constexpr std::string_view kEmptyMsgMac =
     "999a901219f032cd497cadb5e6051e97b6a29ab297bd6ae722bd6062a2f59542";
 
-// Lesson L2.
-TEST(FfiHmac, DISABLED_Rfc4231Vectors) {
+TEST(FfiHmac, Rfc4231Vectors) {
   for (const HmacVector& v : kRfc4231) {
     const Bytes key = hex(v.key);
     const Bytes data = hex(v.data);
@@ -132,8 +131,7 @@ TEST(FfiHmac, DISABLED_Rfc4231Vectors) {
   }
 }
 
-// Lesson L2.
-TEST(FfiHmac, DISABLED_Rfc4231VerifyAcceptsFullTags) {
+TEST(FfiHmac, Rfc4231VerifyAcceptsFullTags) {
   for (const HmacVector& v : kRfc4231) {
     if (v.test_case == 5) {
       continue;
@@ -148,8 +146,7 @@ TEST(FfiHmac, DISABLED_Rfc4231VerifyAcceptsFullTags) {
   }
 }
 
-// Lesson L2.
-TEST(FfiHmac, DISABLED_VerifyRejectsEverySingleBitFlip) {
+TEST(FfiHmac, VerifyRejectsEverySingleBitFlip) {
   const HmacVector& v = kRfc4231.at(1);
   const Bytes key = hex(v.key);
   const Bytes data = hex(v.data);
@@ -164,8 +161,7 @@ TEST(FfiHmac, DISABLED_VerifyRejectsEverySingleBitFlip) {
   }
 }
 
-// Lesson L2.
-TEST(FfiHmac, DISABLED_VerifyWrongMessageIsAuthFailed) {
+TEST(FfiHmac, VerifyWrongMessageIsAuthFailed) {
   const Bytes key = hex(kRfc4231.at(0).key);
   const Bytes mac = hex(kRfc4231.at(0).mac);
   const auto msg = bytes("Hi there");
@@ -174,8 +170,8 @@ TEST(FfiHmac, DISABLED_VerifyWrongMessageIsAuthFailed) {
             name(EKI_ERR_AUTH_FAILED));
 }
 
-// Lesson L2. §4.4: `key_len 0` → INVALID_ARGUMENT, output zero-filled.
-TEST(FfiHmac, DISABLED_KeyLenZeroIsInvalidAndZeroesOut) {
+// §4.4: `key_len 0` → INVALID_ARGUMENT, output zero-filled.
+TEST(FfiHmac, KeyLenZeroIsInvalidAndZeroesOut) {
   const std::array<std::uint8_t, 1> dummy{0x0b};
   const auto msg = bytes("msg");
   for (const std::uint8_t* key : {static_cast<const std::uint8_t*>(nullptr), dummy.data()}) {
@@ -186,8 +182,8 @@ TEST(FfiHmac, DISABLED_KeyLenZeroIsInvalidAndZeroesOut) {
   }
 }
 
-// Lesson L2. §4.4: `msg NULL, msg_len 0` → OK.
-TEST(FfiHmac, DISABLED_MsgNullLenZeroIsOk) {
+// §4.4: `msg NULL, msg_len 0` → OK.
+TEST(FfiHmac, MsgNullLenZeroIsOk) {
   const Bytes key = hex(kRfc4231.at(0).key);
   const Bytes expected = hex(kEmptyMsgMac);
   const std::array<std::uint8_t, 1> dummy{0};
@@ -198,8 +194,7 @@ TEST(FfiHmac, DISABLED_MsgNullLenZeroIsOk) {
   }
 }
 
-// Lesson L2.
-TEST(FfiHmac, DISABLED_NullPointers) {
+TEST(FfiHmac, NullPointers) {
   const Bytes key = hex(kRfc4231.at(0).key);
   const auto msg = bytes("m");
   Bytes out = prefill(32);
@@ -217,8 +212,8 @@ TEST(FfiHmac, DISABLED_NullPointers) {
             name(EKI_ERR_NULL_POINTER));
 }
 
-// Lesson L2. §4.4: `tag_len 31` / `tag NULL, tag_len 0` → INVALID_ARGUMENT.
-TEST(FfiHmac, DISABLED_VerifyTagLenNot32IsInvalid) {
+// §4.4: `tag_len 31` / `tag NULL, tag_len 0` → INVALID_ARGUMENT.
+TEST(FfiHmac, VerifyTagLenNot32IsInvalid) {
   const Bytes key = hex(kRfc4231.at(0).key);
   const Bytes data = hex(kRfc4231.at(0).data);
   Bytes mac = hex(kRfc4231.at(0).mac);
@@ -237,8 +232,8 @@ TEST(FfiHmac, DISABLED_VerifyTagLenNot32IsInvalid) {
             name(EKI_ERR_INVALID_ARGUMENT));
 }
 
-// Lesson L2. `key_len 0` is checked before `tag_len`.
-TEST(FfiHmac, DISABLED_VerifyKeyLenZeroIsInvalid) {
+// `key_len 0` is checked before `tag_len`.
+TEST(FfiHmac, VerifyKeyLenZeroIsInvalid) {
   const Bytes mac = hex(kRfc4231.at(0).mac);
   const auto msg = bytes("m");
   EXPECT_EQ(name(eki_hmac_sha256_verify(nullptr, 0, msg.data(), msg.size(), mac.data(), 32)),
@@ -247,8 +242,7 @@ TEST(FfiHmac, DISABLED_VerifyKeyLenZeroIsInvalid) {
             name(EKI_ERR_INVALID_ARGUMENT));
 }
 
-// Lesson L2.
-TEST(FfiHmac, DISABLED_VerifyNullPointers) {
+TEST(FfiHmac, VerifyNullPointers) {
   const Bytes key = hex(kRfc4231.at(0).key);
   const Bytes data = hex(kRfc4231.at(0).data);
   const Bytes mac = hex(kRfc4231.at(0).mac);
@@ -265,8 +259,7 @@ TEST(FfiHmac, DISABLED_VerifyNullPointers) {
       name(EKI_ERR_NULL_POINTER));
 }
 
-// Lesson L2.
-TEST(FfiHmac, DISABLED_VerifyEmptyMessage) {
+TEST(FfiHmac, VerifyEmptyMessage) {
   const Bytes key = hex(kRfc4231.at(0).key);
   const Bytes mac = hex(kEmptyMsgMac);
   EXPECT_EQ(name(eki_hmac_sha256_verify(key.data(), key.size(), nullptr, 0, mac.data(), 32)),
@@ -330,8 +323,7 @@ eki_status hkdf_a1(Bytes& okm) {
                          okm.data(), okm.size());
 }
 
-// Lesson L2.
-TEST(FfiHkdf, DISABLED_Rfc5869Vectors) {
+TEST(FfiHkdf, Rfc5869Vectors) {
   for (const HkdfVector& v : kRfc5869) {
     const Bytes ikm = hex(v.ikm);
     const Bytes salt = hex(v.salt);
@@ -346,8 +338,8 @@ TEST(FfiHkdf, DISABLED_Rfc5869Vectors) {
   }
 }
 
-// Lesson L2. §4.4: `salt NULL,0`; `info NULL,0` → OK (A.3 has both empty).
-TEST(FfiHkdf, DISABLED_SaltAndInfoNullLenZeroAreOk) {
+// §4.4: `salt NULL,0`; `info NULL,0` → OK (A.3 has both empty).
+TEST(FfiHkdf, SaltAndInfoNullLenZeroAreOk) {
   const Bytes ikm = hex(kRfc5869.at(2).ikm);
   const Bytes expected = hex(kRfc5869.at(2).okm);
   const std::array<std::uint8_t, 1> dummy{0};
@@ -363,15 +355,15 @@ TEST(FfiHkdf, DISABLED_SaltAndInfoNullLenZeroAreOk) {
   }
 }
 
-// Lesson L2. §4.4: `okm_len 8160` → OK; the A.1 output is its prefix.
-TEST(FfiHkdf, DISABLED_OkmLen8160IsOk) {
+// §4.4: `okm_len 8160` → OK; the A.1 output is its prefix.
+TEST(FfiHkdf, OkmLen8160IsOk) {
   Bytes okm = prefill(EKI_HKDF_MAX_OKM_LEN);
   EXPECT_EQ(name(hkdf_a1(okm)), name(EKI_OK));
   EXPECT_EQ(Bytes(okm.begin(), okm.begin() + 42), hex(kRfc5869.at(0).okm));
 }
 
-// Lesson L2. §4.4: `okm_len 0` → INVALID_ARGUMENT.
-TEST(FfiHkdf, DISABLED_OkmLenZeroIsInvalid) {
+// §4.4: `okm_len 0` → INVALID_ARGUMENT.
+TEST(FfiHkdf, OkmLenZeroIsInvalid) {
   Bytes okm;
   EXPECT_EQ(name(hkdf_a1(okm)), name(EKI_ERR_INVALID_ARGUMENT));
   const Bytes ikm = hex(kRfc5869.at(0).ikm);
@@ -379,15 +371,15 @@ TEST(FfiHkdf, DISABLED_OkmLenZeroIsInvalid) {
             name(EKI_ERR_INVALID_ARGUMENT));
 }
 
-// Lesson L2. §4.4: `okm_len 8161` → INVALID_ARGUMENT; out of range, so `okm` is untouched.
-TEST(FfiHkdf, DISABLED_OkmLen8161IsInvalidAndLeavesOkmUntouched) {
+// §4.4: `okm_len 8161` → INVALID_ARGUMENT; out of range, so `okm` is untouched.
+TEST(FfiHkdf, OkmLen8161IsInvalidAndLeavesOkmUntouched) {
   Bytes okm = prefill(EKI_HKDF_MAX_OKM_LEN + 1);
   EXPECT_EQ(name(hkdf_a1(okm)), name(EKI_ERR_INVALID_ARGUMENT));
   EXPECT_TRUE(untouched(okm));
 }
 
-// Lesson L2. §4.4: `ikm_len 0` → INVALID_ARGUMENT, okm zero-filled.
-TEST(FfiHkdf, DISABLED_IkmLenZeroIsInvalidAndZeroesOkm) {
+// §4.4: `ikm_len 0` → INVALID_ARGUMENT, okm zero-filled.
+TEST(FfiHkdf, IkmLenZeroIsInvalidAndZeroesOkm) {
   const std::array<std::uint8_t, 1> dummy{0x0b};
   for (const std::uint8_t* ikm : {static_cast<const std::uint8_t*>(nullptr), dummy.data()}) {
     Bytes okm = prefill(42);
@@ -397,8 +389,8 @@ TEST(FfiHkdf, DISABLED_IkmLenZeroIsInvalidAndZeroesOkm) {
   }
 }
 
-// Lesson L2. §4.4: `info_len 32769` (and the same cap on ikm and salt) → INVALID_ARGUMENT.
-TEST(FfiHkdf, DISABLED_InputLengthsAbove32768AreInvalid) {
+// §4.4: `info_len 32769` (and the same cap on ikm and salt) → INVALID_ARGUMENT.
+TEST(FfiHkdf, InputLengthsAbove32768AreInvalid) {
   const Bytes big(EKI_HKDF_MAX_INPUT_LEN + 1, 0x0b);
   const Bytes ikm = hex(kRfc5869.at(0).ikm);
   Bytes okm = prefill(42);
@@ -421,8 +413,7 @@ TEST(FfiHkdf, DISABLED_InputLengthsAbove32768AreInvalid) {
   EXPECT_TRUE(all_zero(okm));
 }
 
-// Lesson L2.
-TEST(FfiHkdf, DISABLED_InputLengthsOfExactly32768AreOk) {
+TEST(FfiHkdf, InputLengthsOfExactly32768AreOk) {
   const Bytes max(EKI_HKDF_MAX_INPUT_LEN, 0x0b);
   Bytes okm = prefill(32);
   EXPECT_EQ(name(eki_hkdf_sha256(max.data(), max.size(), max.data(), max.size(), max.data(),
@@ -430,8 +421,7 @@ TEST(FfiHkdf, DISABLED_InputLengthsOfExactly32768AreOk) {
             name(EKI_OK));
 }
 
-// Lesson L2.
-TEST(FfiHkdf, DISABLED_NullPointers) {
+TEST(FfiHkdf, NullPointers) {
   const Bytes ikm = hex(kRfc5869.at(0).ikm);
   Bytes okm = prefill(42);
   EXPECT_EQ(name(eki_hkdf_sha256(nullptr, 22, nullptr, 0, nullptr, 0, okm.data(), okm.size())),
@@ -454,9 +444,9 @@ TEST(FfiHkdf, DISABLED_NullPointers) {
             name(EKI_ERR_NULL_POINTER));
 }
 
-// Lesson L2. Output length is honoured: every prefix of the 8160-byte output is the output for
+// Output length is honoured: every prefix of the 8160-byte output is the output for
 // that length (the Rust suite checks this with proptest; here a fixed set of lengths).
-TEST(FfiHkdf, DISABLED_OutputLengthIsPrefixStable) {
+TEST(FfiHkdf, OutputLengthIsPrefixStable) {
   Bytes full = prefill(EKI_HKDF_MAX_OKM_LEN);
   ASSERT_EQ(name(hkdf_a1(full)), name(EKI_OK));
   for (const std::size_t len : {
@@ -638,8 +628,7 @@ eki_status open_case(const AeadCase& c, const Bytes& aad, const Bytes& ct, const
                        aad.data(), aad.size(), ct.data(), ct.size(), tag.data(), pt.data());
 }
 
-// Lesson L2.
-TEST(FfiAead, DISABLED_VectorsSeal) {
+TEST(FfiAead, VectorsSeal) {
   for (const AeadVector& v : kAeadVectors) {
     const AeadCase c = decode(v);
     Bytes ct;
@@ -650,8 +639,7 @@ TEST(FfiAead, DISABLED_VectorsSeal) {
   }
 }
 
-// Lesson L2.
-TEST(FfiAead, DISABLED_VectorsOpen) {
+TEST(FfiAead, VectorsOpen) {
   for (const AeadVector& v : kAeadVectors) {
     const AeadCase c = decode(v);
     Bytes pt;
@@ -660,8 +648,8 @@ TEST(FfiAead, DISABLED_VectorsOpen) {
   }
 }
 
-// Lesson L2. §4.4: `alg 0`, `alg 3` → INVALID_ARGUMENT; outputs zero-filled.
-TEST(FfiAead, DISABLED_SealUnknownAlgIsInvalid) {
+// §4.4: `alg 0`, `alg 3` → INVALID_ARGUMENT; outputs zero-filled.
+TEST(FfiAead, SealUnknownAlgIsInvalid) {
   for (const eki_aead_alg alg : {0, 3, -1, 99, INT32_MIN, INT32_MAX}) {
     AeadCase c = gcm16();
     c.alg = alg;
@@ -673,8 +661,8 @@ TEST(FfiAead, DISABLED_SealUnknownAlgIsInvalid) {
   }
 }
 
-// Lesson L2. §4.4: `key_len 16` → INVALID_ARGUMENT (also 0, 31, 33).
-TEST(FfiAead, DISABLED_SealKeyLenNot32IsInvalid) {
+// §4.4: `key_len 16` → INVALID_ARGUMENT (also 0, 31, 33).
+TEST(FfiAead, SealKeyLenNot32IsInvalid) {
   for (const eki_aead_alg alg : {EKI_AEAD_AES_256_GCM, EKI_AEAD_CHACHA20_POLY1305}) {
     for (const std::size_t key_len : {std::size_t{0}, std::size_t{16}, std::size_t{31}}) {
       AeadCase c = gcm16();
@@ -701,8 +689,8 @@ TEST(FfiAead, DISABLED_SealKeyLenNot32IsInvalid) {
   }
 }
 
-// Lesson L2. §4.4: `nonce_len 11/13` → INVALID_ARGUMENT.
-TEST(FfiAead, DISABLED_SealNonceLenNot12IsInvalid) {
+// §4.4: `nonce_len 11/13` → INVALID_ARGUMENT.
+TEST(FfiAead, SealNonceLenNot12IsInvalid) {
   for (const eki_aead_alg alg : {EKI_AEAD_AES_256_GCM, EKI_AEAD_CHACHA20_POLY1305}) {
     for (const std::size_t nonce_len : {std::size_t{0}, std::size_t{11}, std::size_t{13}}) {
       AeadCase c = gcm16();
@@ -718,8 +706,8 @@ TEST(FfiAead, DISABLED_SealNonceLenNot12IsInvalid) {
   }
 }
 
-// Lesson L2. §4.4: `pt NULL, pt_len 0, ct_out NULL`; `aad NULL,0` → OK (GCM test case 13).
-TEST(FfiAead, DISABLED_SealEmptyPlaintextWithNullBuffersIsOk) {
+// §4.4: `pt NULL, pt_len 0, ct_out NULL`; `aad NULL,0` → OK (GCM test case 13).
+TEST(FfiAead, SealEmptyPlaintextWithNullBuffersIsOk) {
   const AeadCase c = decode(kAeadVectors.at(2));
   Bytes tag = prefill(16);
   EXPECT_EQ(name(eki_aead_seal(c.alg, c.key.data(), c.key.size(), c.nonce.data(), c.nonce.size(),
@@ -728,8 +716,8 @@ TEST(FfiAead, DISABLED_SealEmptyPlaintextWithNullBuffersIsOk) {
   EXPECT_EQ(tag, c.tag);
 }
 
-// Lesson L2. §4.4: `aad NULL,0` → OK (GCM test case 15 has no AAD).
-TEST(FfiAead, DISABLED_SealAadNullLenZeroIsOk) {
+// §4.4: `aad NULL,0` → OK (GCM test case 15 has no AAD).
+TEST(FfiAead, SealAadNullLenZeroIsOk) {
   const AeadCase c = decode(kAeadVectors.at(4));
   Bytes ct = prefill(c.pt.size());
   Bytes tag = prefill(16);
@@ -740,8 +728,8 @@ TEST(FfiAead, DISABLED_SealAadNullLenZeroIsOk) {
   EXPECT_EQ(tag, c.tag);
 }
 
-// Lesson L2. §4.4: `ct_out NULL, pt_len 1, alg 99` → NULL_POINTER (NULL before selector).
-TEST(FfiAead, DISABLED_SealNullCtOutIsCheckedBeforeTheSelector) {
+// §4.4: `ct_out NULL, pt_len 1, alg 99` → NULL_POINTER (NULL before selector).
+TEST(FfiAead, SealNullCtOutIsCheckedBeforeTheSelector) {
   const AeadCase c = gcm16();
   const std::array<std::uint8_t, 1> pt{0x42};
   Bytes tag = prefill(16);
@@ -751,8 +739,7 @@ TEST(FfiAead, DISABLED_SealNullCtOutIsCheckedBeforeTheSelector) {
   EXPECT_TRUE(all_zero(tag));
 }
 
-// Lesson L2.
-TEST(FfiAead, DISABLED_SealNullPointers) {
+TEST(FfiAead, SealNullPointers) {
   const AeadCase c = gcm16();
   const std::size_t n = c.pt.size();
   Bytes ct = prefill(n);
@@ -788,9 +775,9 @@ TEST(FfiAead, DISABLED_SealNullPointers) {
   EXPECT_TRUE(all_zero(ct));
 }
 
-// Lesson L2. `pt_len > EKI_AEAD_MAX_LEN` → INVALID_ARGUMENT; out of range, so `ct_out` is
+// `pt_len > EKI_AEAD_MAX_LEN` → INVALID_ARGUMENT; out of range, so `ct_out` is
 // untouched. The buffers are 1 byte: a conforming library rejects the length before reading.
-TEST(FfiAead, DISABLED_SealPtLenAboveMaxIsInvalid) {
+TEST(FfiAead, SealPtLenAboveMaxIsInvalid) {
   static_assert(sizeof(std::size_t) >= 8, "the length cap needs a 64-bit size_t");
   const AeadCase c = gcm16();
   const std::array<std::uint8_t, 1> pt{0};
@@ -804,8 +791,8 @@ TEST(FfiAead, DISABLED_SealPtLenAboveMaxIsInvalid) {
   EXPECT_TRUE(all_zero(tag));
 }
 
-// Lesson L2. §4.4: tag bit flipped → AUTH_FAILED, `pt_out` all zero.
-TEST(FfiAead, DISABLED_OpenTagBitFlippedIsAuthFailed) {
+// §4.4: tag bit flipped → AUTH_FAILED, `pt_out` all zero.
+TEST(FfiAead, OpenTagBitFlippedIsAuthFailed) {
   for (const AeadCase& c : {gcm16(), chacha282()}) {
     for (const std::size_t bit :
          {std::size_t{0}, std::size_t{7}, std::size_t{64}, std::size_t{127}}) {
@@ -819,8 +806,8 @@ TEST(FfiAead, DISABLED_OpenTagBitFlippedIsAuthFailed) {
   }
 }
 
-// Lesson L2. §4.4: aad changed → AUTH_FAILED, `pt_out` all zero.
-TEST(FfiAead, DISABLED_OpenAadChangedIsAuthFailed) {
+// §4.4: aad changed → AUTH_FAILED, `pt_out` all zero.
+TEST(FfiAead, OpenAadChangedIsAuthFailed) {
   for (const AeadCase& c : {gcm16(), chacha282()}) {
     Bytes aad = c.aad;
     flip(aad, 0, 0x01);
@@ -834,8 +821,8 @@ TEST(FfiAead, DISABLED_OpenAadChangedIsAuthFailed) {
   }
 }
 
-// Lesson L2. §4.4: ct truncated by 1 → AUTH_FAILED, `pt_out` all zero.
-TEST(FfiAead, DISABLED_OpenCtTruncatedByOneIsAuthFailed) {
+// §4.4: ct truncated by 1 → AUTH_FAILED, `pt_out` all zero.
+TEST(FfiAead, OpenCtTruncatedByOneIsAuthFailed) {
   for (const AeadCase& c : {gcm16(), chacha282()}) {
     const Bytes ct(c.ct.begin(), c.ct.end() - 1);
     Bytes pt;
@@ -846,8 +833,7 @@ TEST(FfiAead, DISABLED_OpenCtTruncatedByOneIsAuthFailed) {
   }
 }
 
-// Lesson L2.
-TEST(FfiAead, DISABLED_OpenCtByteFlippedIsAuthFailed) {
+TEST(FfiAead, OpenCtByteFlippedIsAuthFailed) {
   for (const AeadCase& c : {gcm16(), chacha282()}) {
     for (const std::size_t index : {std::size_t{0}, c.ct.size() / 2, c.ct.size() - 1}) {
       Bytes ct = c.ct;
@@ -860,8 +846,7 @@ TEST(FfiAead, DISABLED_OpenCtByteFlippedIsAuthFailed) {
   }
 }
 
-// Lesson L2.
-TEST(FfiAead, DISABLED_OpenWrongKeyOrNonceIsAuthFailed) {
+TEST(FfiAead, OpenWrongKeyOrNonceIsAuthFailed) {
   for (const AeadCase& c : {gcm16(), chacha282()}) {
     AeadCase wrong_key = c;
     flip(wrong_key.key, 0, 0x01);
@@ -875,8 +860,8 @@ TEST(FfiAead, DISABLED_OpenWrongKeyOrNonceIsAuthFailed) {
   }
 }
 
-// Lesson L2. §4.4: `ct_len 0` with the right tag → OK (GCM test case 13, NULL buffers).
-TEST(FfiAead, DISABLED_OpenCtLenZeroWithTheRightTagIsOk) {
+// §4.4: `ct_len 0` with the right tag → OK (GCM test case 13, NULL buffers).
+TEST(FfiAead, OpenCtLenZeroWithTheRightTagIsOk) {
   const AeadCase c = decode(kAeadVectors.at(2));
   EXPECT_EQ(name(eki_aead_open(c.alg, c.key.data(), 32, c.nonce.data(), 12, nullptr, 0, nullptr, 0,
                                c.tag.data(), nullptr)),
@@ -888,8 +873,7 @@ TEST(FfiAead, DISABLED_OpenCtLenZeroWithTheRightTagIsOk) {
             name(EKI_ERR_AUTH_FAILED));
 }
 
-// Lesson L2.
-TEST(FfiAead, DISABLED_OpenUnknownAlgKeyLenNonceLenAreInvalid) {
+TEST(FfiAead, OpenUnknownAlgKeyLenNonceLenAreInvalid) {
   const AeadCase base = gcm16();
   AeadCase bad_alg = base;
   bad_alg.alg = 0;
@@ -904,8 +888,7 @@ TEST(FfiAead, DISABLED_OpenUnknownAlgKeyLenNonceLenAreInvalid) {
   }
 }
 
-// Lesson L2.
-TEST(FfiAead, DISABLED_OpenNullPointers) {
+TEST(FfiAead, OpenNullPointers) {
   const AeadCase c = gcm16();
   const std::size_t n = c.ct.size();
   Bytes pt = prefill(n);
@@ -945,8 +928,8 @@ TEST(FfiAead, DISABLED_OpenNullPointers) {
       << "pt_out NULL, alg 99";
 }
 
-// Lesson L2. `ct_len > EKI_AEAD_MAX_LEN` → INVALID_ARGUMENT; `pt_out` untouched.
-TEST(FfiAead, DISABLED_OpenCtLenAboveMaxIsInvalid) {
+// `ct_len > EKI_AEAD_MAX_LEN` → INVALID_ARGUMENT; `pt_out` untouched.
+TEST(FfiAead, OpenCtLenAboveMaxIsInvalid) {
   const AeadCase c = gcm16();
   const std::array<std::uint8_t, 1> ct{0};
   Bytes pt = prefill(1);
@@ -957,9 +940,9 @@ TEST(FfiAead, DISABLED_OpenCtLenAboveMaxIsInvalid) {
   EXPECT_TRUE(untouched(pt));
 }
 
-// Lesson L2. Round trips for both algorithms over lengths 0..4096 (the Rust suite uses proptest;
+// Round trips for both algorithms over lengths 0..4096 (the Rust suite uses proptest;
 // here a deterministic sweep), and any single-bit change is rejected.
-TEST(FfiAead, DISABLED_SealOpenRoundTrip) {
+TEST(FfiAead, SealOpenRoundTrip) {
   for (const eki_aead_alg alg : {EKI_AEAD_AES_256_GCM, EKI_AEAD_CHACHA20_POLY1305}) {
     for (const std::size_t len : {
              std::size_t{0},
@@ -1056,27 +1039,25 @@ eki_status verify(const PublicKey& pk, std::string_view msg, const Signature& si
   return eki_ecdsa_p256_verify(pk.data(), m.data(), m.size(), sig.data());
 }
 
-// Lesson L2.
-TEST(FfiEcdsa, DISABLED_Rfc6979Vectors) {
+TEST(FfiEcdsa, Rfc6979Vectors) {
   EXPECT_EQ(name(verify(public_key(), "sample", sig_sample())), name(EKI_OK));
   EXPECT_EQ(name(verify(public_key(), "test", hex_array<64>(kSigTest))), name(EKI_OK));
 }
 
-// Lesson L2. High-s signatures are accepted (§4.2).
-TEST(FfiEcdsa, DISABLED_HighAndLowSBothVerify) {
+// High-s signatures are accepted (§4.2).
+TEST(FfiEcdsa, HighAndLowSBothVerify) {
   EXPECT_EQ(name(verify(public_key(), "sample", sig_of(kSigSampleR, kSigSampleOtherS))),
             name(EKI_OK));
 }
 
-// Lesson L2.
-TEST(FfiEcdsa, DISABLED_EmptyMessageWithNullPointer) {
+TEST(FfiEcdsa, EmptyMessageWithNullPointer) {
   const PublicKey pk = public_key();
   const auto sig = hex_array<64>(kSigEmpty);
   EXPECT_EQ(name(eki_ecdsa_p256_verify(pk.data(), nullptr, 0, sig.data())), name(EKI_OK));
 }
 
-// Lesson L2. §4.4: `public_key[0] = 0x02` → INVALID_ARGUMENT.
-TEST(FfiEcdsa, DISABLED_PublicKeyPrefixNot04IsInvalid) {
+// §4.4: `public_key[0] = 0x02` → INVALID_ARGUMENT.
+TEST(FfiEcdsa, PublicKeyPrefixNot04IsInvalid) {
   constexpr std::array<std::uint8_t, 7> kPrefixes{0x00, 0x02, 0x03, 0x05, 0x06, 0x07, 0xff};
   for (const std::uint8_t prefix : kPrefixes) {
     PublicKey pk = public_key();
@@ -1086,8 +1067,8 @@ TEST(FfiEcdsa, DISABLED_PublicKeyPrefixNot04IsInvalid) {
   }
 }
 
-// Lesson L2. §4.4: off-curve point → INVALID_ARGUMENT.
-TEST(FfiEcdsa, DISABLED_OffCurvePointIsInvalid) {
+// §4.4: off-curve point → INVALID_ARGUMENT.
+TEST(FfiEcdsa, OffCurvePointIsInvalid) {
   PublicKey pk = public_key();
   pk.at(64) = static_cast<std::uint8_t>(pk.at(64) ^ 0x01U); // y - 1: not on the curve
   EXPECT_EQ(name(verify(pk, "sample", sig_sample())), name(EKI_ERR_INVALID_ARGUMENT));
@@ -1096,8 +1077,8 @@ TEST(FfiEcdsa, DISABLED_OffCurvePointIsInvalid) {
   EXPECT_EQ(name(verify(zero, "sample", sig_sample())), name(EKI_ERR_INVALID_ARGUMENT)) << "(0, 0)";
 }
 
-// Lesson L2. A coordinate ≥ p fails to parse → INVALID_ARGUMENT.
-TEST(FfiEcdsa, DISABLED_CoordinateNotBelowPIsInvalid) {
+// A coordinate ≥ p fails to parse → INVALID_ARGUMENT.
+TEST(FfiEcdsa, CoordinateNotBelowPIsInvalid) {
   const Bytes p = hex(kP);
   PublicKey pk = public_key();
   std::ranges::copy(p, pk.begin() + 1);
@@ -1107,8 +1088,8 @@ TEST(FfiEcdsa, DISABLED_CoordinateNotBelowPIsInvalid) {
   EXPECT_EQ(name(verify(pk, "sample", sig_sample())), name(EKI_ERR_INVALID_ARGUMENT)) << "y = p";
 }
 
-// Lesson L2. §4.4: `r = 0`; `s = n` → AUTH_FAILED (also s = 0, r = n, 2^256 - 1).
-TEST(FfiEcdsa, DISABLED_ROrSOutOfRangeIsAuthFailed) {
+// §4.4: `r = 0`; `s = n` → AUTH_FAILED (also s = 0, r = n, 2^256 - 1).
+TEST(FfiEcdsa, ROrSOutOfRangeIsAuthFailed) {
   constexpr std::string_view kZero =
       "0000000000000000000000000000000000000000000000000000000000000000";
   constexpr std::string_view kMax =
@@ -1128,8 +1109,8 @@ TEST(FfiEcdsa, DISABLED_ROrSOutOfRangeIsAuthFailed) {
       << "s = 2^256 - 1";
 }
 
-// Lesson L2. §4.4: signature over another message → AUTH_FAILED.
-TEST(FfiEcdsa, DISABLED_SignatureOverOtherMessageIsAuthFailed) {
+// §4.4: signature over another message → AUTH_FAILED.
+TEST(FfiEcdsa, SignatureOverOtherMessageIsAuthFailed) {
   const PublicKey pk = public_key();
   const Signature sig = sig_sample();
   EXPECT_EQ(name(verify(pk, "test", sig)), name(EKI_ERR_AUTH_FAILED));
@@ -1138,8 +1119,7 @@ TEST(FfiEcdsa, DISABLED_SignatureOverOtherMessageIsAuthFailed) {
       << "empty message";
 }
 
-// Lesson L2.
-TEST(FfiEcdsa, DISABLED_SignatureBitFlipIsAuthFailed) {
+TEST(FfiEcdsa, SignatureBitFlipIsAuthFailed) {
   for (const std::size_t index :
        {std::size_t{0}, std::size_t{31}, std::size_t{32}, std::size_t{63}}) {
     Signature sig = sig_sample();
@@ -1149,8 +1129,7 @@ TEST(FfiEcdsa, DISABLED_SignatureBitFlipIsAuthFailed) {
   }
 }
 
-// Lesson L2.
-TEST(FfiEcdsa, DISABLED_NullPointers) {
+TEST(FfiEcdsa, NullPointers) {
   const PublicKey pk = public_key();
   const Signature sig = sig_sample();
   const auto msg = bytes("sample");

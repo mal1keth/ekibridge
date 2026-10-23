@@ -27,7 +27,9 @@ target_link_libraries(ekicore_tests PRIVATE ekicore ekicore_warnings GTest::gtes
 # The tests cannot see the library's private EKI_WITH_* definitions, so the values are forwarded.
 target_compile_definitions(ekicore_tests PRIVATE
   EKI_TEST_WITH_PKCS11=$<BOOL:${EKI_WITH_PKCS11}>
-  EKI_TEST_WITH_PQ=$<BOOL:${EKI_WITH_PQ}>)
+  EKI_TEST_WITH_PQ=$<BOOL:${EKI_WITH_PQ}>
+  # The header-only secret_buffer.hpp is compiled into the tests too and needs the same EKI_MLOCK.
+  $<$<BOOL:${EKI_MLOCK}>:EKI_MLOCK=1>)
 
 # The PKCS#11 tests share one SoftHSM2 token, and login state is per process: ctest must not run
 # them in parallel with each other. The lock covers every discovered test, which is simplest and
