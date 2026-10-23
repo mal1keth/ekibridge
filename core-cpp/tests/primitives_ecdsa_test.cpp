@@ -2,6 +2,8 @@
 // (ekicore::ecdsa_p256_verify): RFC 6979 and Wycheproof vectors and the ECDSA rows of the ABI
 // error matrix.
 
+#include "error_queue_support.hpp"
+
 #include <ekicore/primitives.hpp>
 
 #include <gtest/gtest.h>
@@ -704,6 +706,37 @@ TEST(PrimitivesEcdsa, WycheproofSubset) {
     EXPECT_EQ(ekicore::ecdsa_p256_verify(pk, unhex(c.msg), unhex(c.sig)),
               c.valid ? EKI_OK : EKI_ERR_AUTH_FAILED);
   }
+}
+
+// An expected failure (bad public key, bad signature) removes what OpenSSL queued for it and
+// nothing else; a success leaves the queue as it found it.
+TEST(PrimitivesEcdsa, CallersErrorQueueIsLeftAlone) {
+  const bytes pk = unhex(rfc_public_key);
+  const bytes sig = concat({unhex(sample_r), unhex(sample_s)});
+
+  unsigned long caller = eki_test::push_caller_error();
+  EXPECT_EQ(ekicore::ecdsa_p256_verify(pk, text("sample"), sig), EKI_OK);
+  EXPECT_TRUE(eki_test::queue_holds_only(caller)) << "success";
+
+  caller = eki_test::push_caller_error();
+  EXPECT_EQ(ekicore::ecdsa_p256_verify(pk, text("test"), sig), EKI_ERR_AUTH_FAILED);
+  EXPECT_TRUE(eki_test::queue_holds_only(caller)) << "signature over another message";
+
+  caller = eki_test::push_caller_error();
+  EXPECT_EQ(ekicore::ecdsa_p256_verify(pk, text("sample"), bytes(64, 0)), EKI_ERR_AUTH_FAILED);
+  EXPECT_TRUE(eki_test::queue_holds_only(caller)) << "r = s = 0";
+
+  bytes off_curve = pk;
+  off_curve.at(64) = static_cast<std::uint8_t>(off_curve.at(64) ^ 0x01U);
+  caller = eki_test::push_caller_error();
+  EXPECT_EQ(ekicore::ecdsa_p256_verify(off_curve, text("sample"), sig), EKI_ERR_INVALID_ARGUMENT);
+  EXPECT_TRUE(eki_test::queue_holds_only(caller)) << "point not on the curve";
+
+  bytes x_too_large = pk;
+  std::fill(x_too_large.begin() + 1, x_too_large.begin() + 33, std::uint8_t{0xFF});
+  caller = eki_test::push_caller_error();
+  EXPECT_EQ(ekicore::ecdsa_p256_verify(x_too_large, text("sample"), sig), EKI_ERR_INVALID_ARGUMENT);
+  EXPECT_TRUE(eki_test::queue_holds_only(caller)) << "X >= p";
 }
 
 } // namespace

@@ -6,7 +6,6 @@
 #include <openssl/bn.h>
 #include <openssl/core_names.h>
 #include <openssl/ec.h>
-#include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/obj_mac.h>
 #include <openssl/param_build.h>
@@ -53,7 +52,6 @@ key_result import_public_key(bytes public_key65) noexcept {
   // is by far the likelier cause, so every failure here counts as INVALID_ARGUMENT.
   EVP_PKEY* raw = nullptr;
   if (EVP_PKEY_fromdata(import_ctx.get(), &raw, EVP_PKEY_PUBLIC_KEY, params.get()) != 1) {
-    ERR_clear_error();
     return {.key = nullptr, .status = EKI_ERR_INVALID_ARGUMENT};
   }
   ossl::pkey key{raw};
@@ -63,7 +61,6 @@ key_result import_public_key(bytes public_key65) noexcept {
     return {.key = nullptr, .status = EKI_ERR_BACKEND};
   }
   if (EVP_PKEY_public_check(check_ctx.get()) != 1) {
-    ERR_clear_error();
     return {.key = nullptr, .status = EKI_ERR_INVALID_ARGUMENT};
   }
   return {.key = std::move(key), .status = EKI_OK};
@@ -106,9 +103,9 @@ int encode_signature(bytes sig64, std::array<std::uint8_t, max_der_len>& der) no
   return i2d_ECDSA_SIG(sig.get(), &cursor) == der_len ? der_len : -1;
 }
 
-} // namespace
-
-eki_status ecdsa_p256_verify(bytes public_key65, bytes msg, bytes sig64) noexcept {
+// The whole verification; ecdsa_p256_verify wraps it in an error_scope. The OpenSSL entries left
+// by the INVALID_ARGUMENT and AUTH_FAILED returns are removed there.
+eki_status verify(bytes public_key65, bytes msg, bytes sig64) noexcept {
   if (public_key65.size() != EKI_P256_PUBLIC_KEY_LEN || sig64.size() != EKI_P256_SIGNATURE_LEN ||
       public_key65.front() != 0x04) {
     return EKI_ERR_INVALID_ARGUMENT;
@@ -137,10 +134,16 @@ eki_status ecdsa_p256_verify(bytes public_key65, bytes msg, bytes sig64) noexcep
   const std::uint8_t* msg_data = msg.empty() ? &empty : msg.data();
   if (EVP_DigestVerify(ctx.get(), der.data(), static_cast<std::size_t>(der_len), msg_data,
                        msg.size()) != 1) {
-    ERR_clear_error();
     return EKI_ERR_AUTH_FAILED;
   }
   return EKI_OK;
+}
+
+} // namespace
+
+eki_status ecdsa_p256_verify(bytes public_key65, bytes msg, bytes sig64) noexcept {
+  ossl::error_scope errors;
+  return errors.settle(verify(public_key65, msg, sig64));
 }
 
 } // namespace ekicore

@@ -1,7 +1,11 @@
 #pragma once
 
-// Owning handles for the OpenSSL objects used by the primitives, plus two small helpers that every
-// primitive needs: zeroing an output buffer and feeding long inputs to an int-sized update call.
+// Owning handles for the OpenSSL objects used by the primitives, a scope that confines the
+// primitives' entries on OpenSSL's error queue to the call that raised them, and two small helpers
+// that every primitive needs: zeroing an output buffer and feeding long inputs to an int-sized
+// update call.
+
+#include <ekicore.h>
 
 #include <openssl/bn.h>
 #include <openssl/crypto.h>
@@ -59,6 +63,50 @@ inline std::string last_openssl_error() {
   }
   return message;
 }
+
+// Confines the entries that one primitive call pushes onto this thread's OpenSSL error queue to
+// that call. The queue is shared with the rest of the process, so entries that were already on it
+// belong to the caller and are never removed. Construction marks the current top entry; settle()
+// records the call's status, and destruction then keeps the entries pushed since the mark for
+// EKI_ERR_BACKEND, whose reason they carry, and removes them for every other status: an expected
+// failure (tag mismatch, bad public key, bad signature) is not an OpenSSL error, and a successful
+// call leaves the queue as it found it. Without a settle() call the entries are removed.
+//
+// ERR_set_mark sets no mark on an empty queue. Every entry is then this call's own, so removing
+// them means clearing the queue, and keeping them means doing nothing. The queue holds 16 entries:
+// a call that pushes enough to wrap around overwrites the caller's entries and the mark with them,
+// and removal then clears the whole queue.
+class error_scope {
+public:
+  error_scope() noexcept : marked_(ERR_set_mark() == 1) {}
+  error_scope(const error_scope&) = delete;
+  error_scope(error_scope&&) = delete;
+  error_scope& operator=(const error_scope&) = delete;
+  error_scope& operator=(error_scope&&) = delete;
+
+  ~error_scope() {
+    if (keep_) {
+      if (marked_) {
+        ERR_clear_last_mark();
+      }
+    } else if (marked_) {
+      ERR_pop_to_mark();
+    } else {
+      ERR_clear_error();
+    }
+  }
+
+  // Records the call's outcome and returns it unchanged, so that a primitive can end with
+  // `return errors.settle(status);`.
+  eki_status settle(eki_status status) noexcept {
+    keep_ = status == EKI_ERR_BACKEND;
+    return status;
+  }
+
+private:
+  bool marked_;
+  bool keep_ = false;
+};
 
 // Overwrites buf with zeros in a way the compiler cannot elide.
 inline void cleanse(std::span<std::uint8_t> buf) noexcept {

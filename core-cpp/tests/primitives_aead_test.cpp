@@ -1,6 +1,8 @@
 // Unit tests of the internal AEAD primitives (ekicore::aead_seal / aead_open): RFC 8439 and
 // Wycheproof vectors, the AEAD rows of the ABI error matrix, zero-on-failure and round trips.
 
+#include "error_queue_support.hpp"
+
 #include <ekicore/openssl_raii.hpp>
 #include <ekicore/primitives.hpp>
 
@@ -643,6 +645,30 @@ TEST(PrimitivesAead, ChunksStayWithinIntRange) {
     return budget-- > 0;
   }));
   EXPECT_EQ(calls.size(), 2U);
+}
+
+// An expected failure removes what OpenSSL queued for it and nothing else; a success leaves the
+// queue as it found it.
+TEST(PrimitivesAead, CallersErrorQueueIsLeftAlone) {
+  const sample s;
+  for (const eki_aead_alg alg : algs) {
+    SCOPED_TRACE(alg);
+    unsigned long caller = eki_test::push_caller_error();
+    const auto [ct, tag] = seal(alg, s);
+    bytes pt(ct.size(), fill);
+    EXPECT_EQ(ekicore::aead_open(alg, s.key, s.nonce, s.aad, ct, tag, pt), EKI_OK);
+    EXPECT_TRUE(eki_test::queue_holds_only(caller)) << "success";
+
+    caller = eki_test::push_caller_error();
+    auto bad_tag = tag;
+    bad_tag.at(0) = static_cast<std::uint8_t>(bad_tag.at(0) ^ 1U);
+    EXPECT_EQ(ekicore::aead_open(alg, s.key, s.nonce, s.aad, ct, bad_tag, pt), EKI_ERR_AUTH_FAILED);
+    EXPECT_TRUE(eki_test::queue_holds_only(caller)) << "tag mismatch";
+
+    caller = eki_test::push_caller_error();
+    EXPECT_EQ(ekicore::aead_open(alg, s.key, s.nonce, {}, ct, tag, pt), EKI_ERR_AUTH_FAILED);
+    EXPECT_TRUE(eki_test::queue_holds_only(caller)) << "aad dropped";
+  }
 }
 
 } // namespace

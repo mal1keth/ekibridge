@@ -1,6 +1,8 @@
 // Unit tests of the internal HMAC-SHA256 primitive (ekicore::hmac_sha256 and _verify): RFC 4231
 // vectors and the HMAC rows of the ABI error matrix.
 
+#include "error_queue_support.hpp"
+
 #include <ekicore/primitives.hpp>
 
 #include <gtest/gtest.h>
@@ -217,6 +219,24 @@ TEST(PrimitivesHmac, LongMessageRoundTrip) {
   EXPECT_EQ(ekicore::hmac_sha256_verify(key, msg, tag), EKI_OK);
   msg.back() = static_cast<std::uint8_t>(msg.back() ^ 1U);
   EXPECT_EQ(ekicore::hmac_sha256_verify(key, msg, tag), EKI_ERR_AUTH_FAILED);
+}
+
+// HMAC has no error_scope: its only failures after an OpenSSL call are BACKEND, and a tag
+// mismatch is decided by CRYPTO_memcmp, which queues nothing. The queue is left as found.
+TEST(PrimitivesHmac, CallersErrorQueueIsLeftAlone) {
+  const bytes key(32, 0x0b);
+  const bytes msg{'m', 's', 'g'};
+  std::array<std::uint8_t, EKI_HMAC_SHA256_LEN> tag{};
+
+  unsigned long caller = eki_test::push_caller_error();
+  EXPECT_EQ(ekicore::hmac_sha256(key, msg, tag), EKI_OK);
+  EXPECT_EQ(ekicore::hmac_sha256_verify(key, msg, tag), EKI_OK);
+  EXPECT_TRUE(eki_test::queue_holds_only(caller)) << "success";
+
+  tag.at(0) = static_cast<std::uint8_t>(tag.at(0) ^ 1U);
+  caller = eki_test::push_caller_error();
+  EXPECT_EQ(ekicore::hmac_sha256_verify(key, msg, tag), EKI_ERR_AUTH_FAILED);
+  EXPECT_TRUE(eki_test::queue_holds_only(caller)) << "tag mismatch";
 }
 
 } // namespace

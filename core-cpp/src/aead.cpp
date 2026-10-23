@@ -4,7 +4,6 @@
 #include <ekicore/openssl_raii.hpp>
 #include <ekicore/primitives.hpp>
 
-#include <openssl/err.h>
 #include <openssl/evp.h>
 
 #include <algorithm>
@@ -120,8 +119,7 @@ eki_status open_impl(const char* name, bytes key, bytes nonce, bytes aad, bytes 
   std::array<std::uint8_t, EKI_AEAD_TAG_LEN> scratch{};
   int final_len = 0;
   if (EVP_DecryptFinal_ex(ctx.get(), scratch.data(), &final_len) != 1) {
-    // The tag did not match: an expected outcome, not an error worth keeping on the queue.
-    ERR_clear_error();
+    // The tag did not match. The error_scope in aead_open removes whatever OpenSSL queued for it.
     return EKI_ERR_AUTH_FAILED;
   }
   return final_len == 0 ? EKI_OK : EKI_ERR_BACKEND;
@@ -131,6 +129,7 @@ eki_status open_impl(const char* name, bytes key, bytes nonce, bytes aad, bytes 
 
 eki_status aead_seal(eki_aead_alg alg, bytes key, bytes nonce, bytes aad, bytes pt, mut_bytes ct,
                      mut_bytes tag16) noexcept {
+  ossl::error_scope errors;
   const char* name = cipher_name(alg);
   eki_status status = EKI_OK;
   if (name == nullptr || !lengths_ok(key, nonce, pt, ct.size(), tag16.size())) {
@@ -146,11 +145,12 @@ eki_status aead_seal(eki_aead_alg alg, bytes key, bytes nonce, bytes aad, bytes 
       ossl::cleanse(tag16);
     }
   }
-  return status;
+  return errors.settle(status);
 }
 
 eki_status aead_open(eki_aead_alg alg, bytes key, bytes nonce, bytes aad, bytes ct, bytes tag16,
                      mut_bytes pt) noexcept {
+  ossl::error_scope errors;
   const char* name = cipher_name(alg);
   eki_status status = EKI_OK;
   if (name == nullptr || !lengths_ok(key, nonce, ct, pt.size(), tag16.size())) {
@@ -162,7 +162,7 @@ eki_status aead_open(eki_aead_alg alg, bytes key, bytes nonce, bytes aad, bytes 
   if (status != EKI_OK && pt.size() <= EKI_AEAD_MAX_LEN) {
     ossl::cleanse(pt);
   }
-  return status;
+  return errors.settle(status);
 }
 
 } // namespace ekicore

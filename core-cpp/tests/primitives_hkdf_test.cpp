@@ -1,6 +1,8 @@
 // Unit tests of the internal HKDF-SHA256 primitive (ekicore::hkdf_sha256): RFC 5869 vectors and
 // the HKDF rows of the ABI error matrix.
 
+#include "error_queue_support.hpp"
+
 #include <ekicore/primitives.hpp>
 
 #include <gtest/gtest.h>
@@ -158,6 +160,20 @@ TEST(PrimitivesHkdf, InvalidLengthsZeroOutputInRange) {
     const bool in_range = row.okm_len >= 1 && row.okm_len <= EKI_HKDF_MAX_OKM_LEN;
     EXPECT_TRUE(all_equal(okm, in_range ? std::uint8_t{0} : fill));
   }
+}
+
+// HKDF has no error_scope: its only failures after an OpenSSL call are BACKEND. A successful
+// derivation, and a length rejected before any OpenSSL call, leave the queue as found.
+TEST(PrimitivesHkdf, CallersErrorQueueIsLeftAlone) {
+  const bytes ikm(22, 0x0b);
+  bytes okm(42);
+  unsigned long caller = eki_test::push_caller_error();
+  EXPECT_EQ(ekicore::hkdf_sha256(ikm, {}, {}, okm), EKI_OK);
+  EXPECT_TRUE(eki_test::queue_holds_only(caller)) << "success";
+
+  caller = eki_test::push_caller_error();
+  EXPECT_EQ(ekicore::hkdf_sha256({}, {}, {}, okm), EKI_ERR_INVALID_ARGUMENT);
+  EXPECT_TRUE(eki_test::queue_holds_only(caller)) << "empty ikm";
 }
 
 } // namespace
