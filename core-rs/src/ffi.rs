@@ -7,10 +7,10 @@
 //!
 //! # State
 //!
-//! `eki_hmac_sha256` and `eki_hmac_sha256_verify` are implemented, as are the three metadata
-//! functions. `eki_ks_close` does nothing, which is correct while `eki_ks_open` never creates a
-//! handle. Every other function is a stub that returns `EKI_ERR_UNSUPPORTED` without looking at
-//! any argument.
+//! `eki_hmac_sha256`, `eki_hmac_sha256_verify` and `eki_hkdf_sha256` are implemented, as are the
+//! three metadata functions. `eki_ks_close` does nothing, which is correct while `eki_ks_open`
+//! never creates a handle. Every other function is a stub that returns `EKI_ERR_UNSUPPORTED`
+//! without looking at any argument.
 //!
 //! # Caller contract
 //!
@@ -70,12 +70,12 @@ use std::any::Any;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use ekicore_abi::{
-    EKI_ABI_VERSION, EKI_HMAC_SHA256_LEN, eki_aead_alg, eki_key_alg, eki_key_id, eki_key_info,
-    eki_ks, eki_ks_config, eki_status,
+    EKI_ABI_VERSION, EKI_HKDF_MAX_INPUT_LEN, EKI_HKDF_MAX_OKM_LEN, EKI_HMAC_SHA256_LEN,
+    eki_aead_alg, eki_key_alg, eki_key_id, eki_key_info, eki_ks, eki_ks_config, eki_status,
 };
 
 use crate::error::Error;
-use crate::hmac;
+use crate::{hkdf, hmac};
 
 /// `eki_version()` result: implementation name, a space, the crate version, and a NUL.
 /// cbindgen:ignore
@@ -414,7 +414,24 @@ pub unsafe extern "C" fn eki_hkdf_sha256(
     okm: *mut u8,
     okm_len: usize,
 ) -> eki_status {
-    eki_status::EKI_ERR_UNSUPPORTED
+    // SAFETY: the C caller guarantees C1 to C3 for `ikm`/`ikm_len`, `salt`/`salt_len` and
+    // `info`/`info_len` (each with the maximum `EKI_HKDF_MAX_INPUT_LEN`) and for `okm`/`okm_len`
+    // (maximum `EKI_HKDF_MAX_OKM_LEN`), which are the preconditions of `Input::new` and
+    // `Output::new`. C1 holds only for a length within its maximum; above it the preconditions
+    // require nothing of the pointer, and `bytes` refuses the length before creating a slice. The
+    // wrappers are locals of this call, so they do not outlive that guarantee.
+    let (ikm, salt, info, okm) = unsafe {
+        (
+            Input::new(ikm, ikm_len, EKI_HKDF_MAX_INPUT_LEN),
+            Input::new(salt, salt_len, EKI_HKDF_MAX_INPUT_LEN),
+            Input::new(info, info_len, EKI_HKDF_MAX_INPUT_LEN),
+            Output::new(okm, okm_len, EKI_HKDF_MAX_OKM_LEN),
+        )
+    };
+    barrier([okm], |[okm]| {
+        check_null(&[&ikm, &salt, &info, okm])?;
+        hkdf::hkdf_sha256(ikm.bytes()?, salt.bytes()?, info.bytes()?, okm.bytes()?)
+    })
 }
 
 /// Encrypts `pt` into `ct_out` (`pt_len` bytes) and writes the 16-byte tag to `tag_out`.

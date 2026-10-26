@@ -86,7 +86,6 @@ fn a1(len: usize) -> (eki_status, Vec<u8>) {
 }
 
 #[test]
-#[ignore = "lesson L3"]
 fn rfc5869_vectors() {
     for v in RFC5869 {
         let (ikm, salt, info, expected) = (hex(v.ikm), hex(v.salt), hex(v.info), hex(v.okm));
@@ -103,7 +102,6 @@ fn rfc5869_vectors() {
 }
 
 #[test]
-#[ignore = "lesson L3"]
 fn salt_and_info_null_len_zero_are_ok() {
     // A.3 has an empty salt (the RFC default salt) and empty info; NULL and a non-NULL empty
     // slice must give the same result.
@@ -126,7 +124,6 @@ fn salt_and_info_null_len_zero_are_ok() {
 }
 
 #[test]
-#[ignore = "lesson L3"]
 fn okm_len_8160_is_ok_and_extends_the_shorter_output() {
     let (status, okm) = a1(EKI_HKDF_MAX_OKM_LEN);
     assert_eq!(status, EKI_OK);
@@ -135,7 +132,6 @@ fn okm_len_8160_is_ok_and_extends_the_shorter_output() {
 }
 
 #[test]
-#[ignore = "lesson L3"]
 fn okm_len_zero_is_invalid() {
     let (status, _) = a1(0);
     assert_eq!(status, EKI_ERR_INVALID_ARGUMENT);
@@ -147,7 +143,6 @@ fn okm_len_zero_is_invalid() {
 }
 
 #[test]
-#[ignore = "lesson L3"]
 fn okm_len_8161_is_invalid_and_leaves_okm_untouched() {
     let (status, okm) = a1(EKI_HKDF_MAX_OKM_LEN + 1);
     assert_eq!(status, EKI_ERR_INVALID_ARGUMENT);
@@ -156,7 +151,6 @@ fn okm_len_8161_is_invalid_and_leaves_okm_untouched() {
 }
 
 #[test]
-#[ignore = "lesson L3"]
 fn ikm_len_zero_is_invalid_and_zeroes_okm() {
     for ikm in [In::Null(0), In::Bytes(&[])] {
         let mut okm = prefill(42);
@@ -170,7 +164,6 @@ fn ikm_len_zero_is_invalid_and_zeroes_okm() {
 }
 
 #[test]
-#[ignore = "lesson L3"]
 fn input_lengths_above_32768_are_invalid() {
     let big = vec![0x0b_u8; EKI_HKDF_MAX_INPUT_LEN + 1];
     let ikm = hex(RFC5869[0].ikm);
@@ -191,7 +184,6 @@ fn input_lengths_above_32768_are_invalid() {
 }
 
 #[test]
-#[ignore = "lesson L3"]
 fn input_lengths_of_exactly_32768_are_ok() {
     let max = vec![0x0b_u8; EKI_HKDF_MAX_INPUT_LEN];
     let mut okm = prefill(32);
@@ -207,7 +199,6 @@ fn input_lengths_of_exactly_32768_are_ok() {
 }
 
 #[test]
-#[ignore = "lesson L3"]
 fn length_checks_run_in_parameter_order() {
     // Every one of these is INVALID_ARGUMENT whichever check fires first; the point is that no
     // combination of bad lengths yields anything else.
@@ -226,7 +217,6 @@ fn length_checks_run_in_parameter_order() {
 }
 
 #[test]
-#[ignore = "lesson L3"]
 fn null_pointers() {
     let ikm = hex(RFC5869[0].ikm);
     let mut okm = prefill(42);
@@ -263,7 +253,6 @@ proptest! {
     })]
 
     #[test]
-    #[ignore = "lesson L3"]
     fn output_length_is_honoured_and_prefix_stable(
         ikm in proptest::collection::vec(any::<u8>(), 1..=64),
         salt in proptest::collection::vec(any::<u8>(), 0..=64),
