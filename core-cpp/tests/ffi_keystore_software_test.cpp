@@ -1,7 +1,6 @@
-// The software key store through the C ABI. Disabled until lesson L6 (C++ store.cpp, software.cpp
-// and the ffi entry points). Mirrors core-rs/tests/ffi_keystore_software.rs: plan §4.4 ks_open and
-// every store row; §4.2 sequences, labels, outputs on error, last error and thread safety. The
-// scenarios shared with the PKCS#11 suite are in test_support.hpp.
+// The software key store through the C ABI. Mirrors core-rs/tests/ffi_keystore_software.rs: plan
+// §4.4 ks_open and every store row; §4.2 sequences, labels, outputs on error, last error and
+// thread safety. The scenarios shared with the PKCS#11 suite are in test_support.hpp.
 
 #include "test_support.hpp"
 
@@ -34,8 +33,7 @@ namespace scenarios = eki_test::scenarios;
 
 // --- open / close ------------------------------------------------------------------------------
 
-// Lesson L6.
-TEST(FfiKeystoreSoftware, DISABLED_OpenAndClose) {
+TEST(FfiKeystoreSoftware, OpenAndClose) {
   const eki_ks_config config = software_config();
   const eki_test::Opened opened = try_open(&config);
   EXPECT_EQ(name(opened.status), name(EKI_OK));
@@ -44,8 +42,8 @@ TEST(FfiKeystoreSoftware, DISABLED_OpenAndClose) {
   eki_ks_close(nullptr); // NULL-safe
 }
 
-// Lesson L6. Software ignores the PKCS#11 fields.
-TEST(FfiKeystoreSoftware, DISABLED_OpenIgnoresThePkcs11Fields) {
+// Software ignores the PKCS#11 fields.
+TEST(FfiKeystoreSoftware, OpenIgnoresThePkcs11Fields) {
   const eki_ks_config config{
       .backend = EKI_KS_SOFTWARE,
       .pkcs11_module_path = "not a module",
@@ -58,8 +56,8 @@ TEST(FfiKeystoreSoftware, DISABLED_OpenIgnoresThePkcs11Fields) {
   ASSERT_TRUE(store.generate(EKI_KEY_HMAC_SHA256, "eki-test", id));
 }
 
-// Lesson L6. §4.4: `backend 0`; `backend 99` → INVALID_ARGUMENT.
-TEST(FfiKeystoreSoftware, DISABLED_OpenUnknownBackendIsInvalid) {
+// §4.4: `backend 0`; `backend 99` → INVALID_ARGUMENT.
+TEST(FfiKeystoreSoftware, OpenUnknownBackendIsInvalid) {
   for (const eki_ks_backend backend : {0, 3, 99, -1, INT32_MIN, INT32_MAX}) {
     EXPECT_TRUE(
         open_fails(eki_ks_config{backend, nullptr, nullptr, nullptr}, EKI_ERR_INVALID_ARGUMENT))
@@ -67,15 +65,17 @@ TEST(FfiKeystoreSoftware, DISABLED_OpenUnknownBackendIsInvalid) {
   }
 }
 
-// Lesson L6. §4.4: PKCS#11 with `module_path NULL` → NULL_POINTER (UNSUPPORTED if PKCS#11 is
-// not compiled in: the selector check, step 2, answers first).
+// §4.4: PKCS#11 with `module_path NULL` → NULL_POINTER (UNSUPPORTED if PKCS#11 is not compiled
+// in: the selector check, step 2, answers first). Disabled until the PKCS#11 backend exists: until
+// then the library answers EKI_KS_PKCS11 as not compiled in even when EKI_WITH_PKCS11 is on, while
+// kWithPkcs11 follows EKI_WITH_PKCS11.
 TEST(FfiKeystoreSoftware, DISABLED_OpenPkcs11WithNullModulePath) {
   const eki_status expected = eki_test::kWithPkcs11 ? EKI_ERR_NULL_POINTER : EKI_ERR_UNSUPPORTED;
   EXPECT_TRUE(open_fails(eki_ks_config{EKI_KS_PKCS11, nullptr, "ekibridge", "1234"}, expected));
 }
 
-// Lesson L6. §4.4: required pointer NULL → NULL_POINTER; `*out` is NULL on failure.
-TEST(FfiKeystoreSoftware, DISABLED_OpenNullPointers) {
+// §4.4: required pointer NULL → NULL_POINTER; `*out` is NULL on failure.
+TEST(FfiKeystoreSoftware, OpenNullPointers) {
   const eki_test::Opened opened = try_open(nullptr);
   EXPECT_EQ(name(opened.status), name(EKI_ERR_NULL_POINTER)) << "config NULL";
   EXPECT_TRUE(opened.out_is_null);
@@ -91,8 +91,7 @@ TEST(FfiKeystoreSoftware, DISABLED_OpenNullPointers) {
       << "out NULL before backend 99";
 }
 
-// Lesson L6.
-TEST(FfiKeystoreSoftware, DISABLED_StoresAreIndependent) {
+TEST(FfiKeystoreSoftware, StoresAreIndependent) {
   Store a;
   Store b;
   ASSERT_TRUE(a.open(software_config()));
@@ -104,8 +103,7 @@ TEST(FfiKeystoreSoftware, DISABLED_StoresAreIndependent) {
   EXPECT_TRUE(info_zero(info));
 }
 
-// Lesson L6.
-TEST(FfiKeystoreSoftware, DISABLED_KeysAreGoneAfterCloseAndReopen) {
+TEST(FfiKeystoreSoftware, KeysAreGoneAfterCloseAndReopen) {
   eki_key_id id{};
   {
     Store store;
@@ -134,56 +132,47 @@ private:
   Store store_;
 };
 
-// Lesson L6.
-TEST_F(FfiKeystoreSoftwareScenario, DISABLED_Lifecycle) {
+TEST_F(FfiKeystoreSoftwareScenario, Lifecycle) {
   scenarios::lifecycle(store());
 }
 
-// Lesson L6.
-TEST_F(FfiKeystoreSoftwareScenario, DISABLED_WrapUnwrapRoundTrip) {
+TEST_F(FfiKeystoreSoftwareScenario, WrapUnwrapRoundTrip) {
   scenarios::wrap_unwrap_round_trip(store());
 }
 
-// Lesson L6.
-TEST_F(FfiKeystoreSoftwareScenario, DISABLED_GenerateRows) {
+TEST_F(FfiKeystoreSoftwareScenario, GenerateRows) {
   scenarios::generate_rows(store());
 }
 
-// Lesson L6.
-TEST_F(FfiKeystoreSoftwareScenario, DISABLED_GenerateNullRows) {
+TEST_F(FfiKeystoreSoftwareScenario, GenerateNullRows) {
   scenarios::generate_null_rows(store());
 }
 
-// Lesson L6.
-TEST_F(FfiKeystoreSoftwareScenario, DISABLED_LookupRows) {
+TEST_F(FfiKeystoreSoftwareScenario, LookupRows) {
   scenarios::lookup_rows(store());
 }
 
-// Lesson L6.
-TEST_F(FfiKeystoreSoftwareScenario, DISABLED_LookupNullRows) {
+TEST_F(FfiKeystoreSoftwareScenario, LookupNullRows) {
   scenarios::lookup_null_rows(store());
 }
 
-// Lesson L6.
-TEST_F(FfiKeystoreSoftwareScenario, DISABLED_WrapRows) {
+TEST_F(FfiKeystoreSoftwareScenario, WrapRows) {
   scenarios::wrap_rows(store());
 }
 
-// Lesson L6.
-TEST_F(FfiKeystoreSoftwareScenario, DISABLED_UnwrapRows) {
+TEST_F(FfiKeystoreSoftwareScenario, UnwrapRows) {
   scenarios::unwrap_rows(store());
 }
 
-// Lesson L6.
-TEST_F(FfiKeystoreSoftwareScenario, DISABLED_LastErrorRows) {
+TEST_F(FfiKeystoreSoftwareScenario, LastErrorRows) {
   scenarios::last_error_rows(store());
 }
 
 // --- software-only -----------------------------------------------------------------------------
 
-// Lesson L6. A 64-byte label is the maximum; 65 non-NUL bytes in an allocation of exactly 65
+// A 64-byte label is the maximum; 65 non-NUL bytes in an allocation of exactly 65
 // bytes are rejected without reading past the end (ASan reports an over-read).
-TEST_F(FfiKeystoreSoftwareScenario, DISABLED_LabelBoundedScan) {
+TEST_F(FfiKeystoreSoftwareScenario, LabelBoundedScan) {
   const std::string text = label_of_len(64);
   eki_key_id id{};
   ASSERT_TRUE(store().generate(EKI_KEY_ECDSA_P256, text, id));
@@ -199,8 +188,8 @@ TEST_F(FfiKeystoreSoftwareScenario, DISABLED_LabelBoundedScan) {
   EXPECT_TRUE(all_zero(id_bytes(id)));
 }
 
-// Lesson L6. §4.2 "Thread safety": one handle shared by several threads.
-TEST_F(FfiKeystoreSoftwareScenario, DISABLED_OneHandleSharedByThreads) {
+// §4.2 "Thread safety": one handle shared by several threads.
+TEST_F(FfiKeystoreSoftwareScenario, OneHandleSharedByThreads) {
   eki_key_id mac{};
   ASSERT_TRUE(store().generate(EKI_KEY_HMAC_SHA256, "eki-test shared", mac));
   scenarios::Mac expected{};
@@ -234,10 +223,10 @@ TEST_F(FfiKeystoreSoftwareScenario, DISABLED_OneHandleSharedByThreads) {
   EXPECT_EQ(failures, (std::array<int, 8>{}));
 }
 
-// Lesson L6. Wrap/unwrap preserves the key under many labels and ids (the Rust suite uses
+// Wrap/unwrap preserves the key under many labels and ids (the Rust suite uses
 // proptest; here a deterministic sweep). The metadata is unauthenticated (plan §2): the same blob
 // may be unwrapped as either secret-key algorithm.
-TEST_F(FfiKeystoreSoftwareScenario, DISABLED_WrapUnwrapPreservesTheKey) {
+TEST_F(FfiKeystoreSoftwareScenario, WrapUnwrapPreservesTheKey) {
   eki_key_id kek{};
   eki_key_id mac{};
   ASSERT_TRUE(store().generate(EKI_KEY_AES_256, "eki-test kek", kek));
@@ -266,6 +255,108 @@ TEST_F(FfiKeystoreSoftwareScenario, DISABLED_WrapUnwrapPreservesTheKey) {
     scenarios::Blob again{};
     ASSERT_TRUE(store().wrap(kek, id, again));
     EXPECT_EQ(again, blob) << "re-wrapping the copy gives the same blob";
+  }
+}
+
+// §4.3: a failed unwrap creates nothing and leaves existing keys unchanged. Beyond their metadata
+// (checked in the unwrap rows), the keys still work exactly as before.
+TEST_F(FfiKeystoreSoftwareScenario, FailedUnwrapLeavesExistingKeysUsable) {
+  eki_ks* ks = store().get();
+  eki_key_id kek{};
+  eki_key_id mac{};
+  ASSERT_TRUE(store().generate(EKI_KEY_AES_256, "eki-test kek", kek));
+  ASSERT_TRUE(store().generate(EKI_KEY_HMAC_SHA256, "eki-test hmac", mac));
+  scenarios::Mac before{};
+  scenarios::Blob blob{};
+  ASSERT_TRUE(store().hmac(mac, bytes("message"), before));
+  ASSERT_TRUE(store().wrap(kek, mac, blob));
+
+  scenarios::Blob flipped = blob;
+  flipped.at(0) = static_cast<std::uint8_t>(flipped.at(0) ^ 0x01U);
+  const eki_key_id fresh = eki_test::fixed_id(0x31);
+  EXPECT_EQ(name(eki_ks_unwrap(ks, &kek, flipped.data(), flipped.size(), EKI_KEY_HMAC_SHA256,
+                               "eki-test copy", &fresh)),
+            name(EKI_ERR_AUTH_FAILED));
+  EXPECT_EQ(name(eki_ks_unwrap(ks, &kek, blob.data(), blob.size(), EKI_KEY_AES_256,
+                               "eki-test overwrite", &mac)),
+            name(EKI_ERR_KEY_EXISTS));
+  EXPECT_EQ(name(eki_ks_unwrap(ks, &kek, blob.data(), blob.size(), EKI_KEY_HMAC_SHA256,
+                               "eki-test overwrite", &kek)),
+            name(EKI_ERR_KEY_EXISTS));
+
+  scenarios::Mac after{};
+  ASSERT_TRUE(store().hmac(mac, bytes("message"), after));
+  EXPECT_EQ(after, before) << "the HMAC key is unchanged";
+  scenarios::Blob again{};
+  ASSERT_TRUE(store().wrap(kek, mac, again));
+  EXPECT_EQ(again, blob) << "the KEK is unchanged";
+  eki_key_info info = prefilled_info();
+  EXPECT_EQ(name(eki_ks_get_info(ks, &fresh, &info)), name(EKI_ERR_KEY_NOT_FOUND));
+  EXPECT_TRUE(info_zero(info));
+
+  ASSERT_TRUE(store().unwrap(kek, blob, EKI_KEY_HMAC_SHA256, "eki-test copy", fresh));
+  ASSERT_TRUE(store().hmac(fresh, bytes("message"), after));
+  EXPECT_EQ(after, before);
+}
+
+// §4.2: an id is taken while any object carries it, and only then. Once destroyed, an id can be
+// given to an unwrapped key, which has the new algorithm and label.
+TEST_F(FfiKeystoreSoftwareScenario, DestroyedIdIsFreeForUnwrap) {
+  eki_ks* ks = store().get();
+  eki_key_id kek{};
+  eki_key_id mac{};
+  eki_key_id ec{};
+  ASSERT_TRUE(store().generate(EKI_KEY_AES_256, "eki-test kek", kek));
+  ASSERT_TRUE(store().generate(EKI_KEY_HMAC_SHA256, "eki-test hmac", mac));
+  ASSERT_TRUE(store().generate(EKI_KEY_ECDSA_P256, "eki-test ecdsa", ec));
+  scenarios::Blob blob{};
+  ASSERT_TRUE(store().wrap(kek, mac, blob));
+  ASSERT_TRUE(store().destroy(ec));
+
+  ASSERT_TRUE(store().unwrap(kek, blob, EKI_KEY_HMAC_SHA256, "eki-test reused id", ec));
+  eki_key_info info{};
+  ASSERT_TRUE(store().info(ec, info));
+  EXPECT_TRUE(info_is(info, EKI_KEY_HMAC_SHA256, "eki-test reused id"));
+  scenarios::PublicKey pk = eki_test::prefilled<65>();
+  EXPECT_EQ(name(eki_ks_get_public_key(ks, &ec, pk.data())), name(EKI_ERR_WRONG_KEY_TYPE));
+  EXPECT_TRUE(all_zero(pk));
+  scenarios::Mac a{};
+  scenarios::Mac b{};
+  ASSERT_TRUE(store().hmac(ec, bytes("message"), a));
+  ASSERT_TRUE(store().hmac(mac, bytes("message"), b));
+  EXPECT_EQ(a, b);
+}
+
+// eki_ks_sign cross-checked with the stateless eki_ecdsa_p256_verify over several message
+// lengths: each signature verifies under its own key's public key and under no other.
+TEST_F(FfiKeystoreSoftwareScenario, SignaturesVerifyOnlyUnderTheirOwnPublicKey) {
+  eki_key_id first{};
+  eki_key_id second{};
+  ASSERT_TRUE(store().generate(EKI_KEY_ECDSA_P256, "eki-test ecdsa 1", first));
+  ASSERT_TRUE(store().generate(EKI_KEY_ECDSA_P256, "eki-test ecdsa 2", second));
+  scenarios::PublicKey first_pk{};
+  scenarios::PublicKey second_pk{};
+  ASSERT_TRUE(store().public_key(first, first_pk));
+  ASSERT_TRUE(store().public_key(second, second_pk));
+  EXPECT_NE(first_pk, second_pk);
+
+  for (const std::size_t len : {
+           std::size_t{0},
+           std::size_t{1},
+           std::size_t{55},
+           std::size_t{64},
+           std::size_t{1000},
+           std::size_t{1} << 16U,
+       }) {
+    std::vector<std::uint8_t> msg(len);
+    for (std::size_t i = 0; i < len; ++i) {
+      msg.at(i) = static_cast<std::uint8_t>(i * 13U);
+    }
+    scenarios::Signature sig{};
+    ASSERT_TRUE(store().sign(first, msg, sig));
+    EXPECT_EQ(name(scenarios::verify(first_pk, msg, sig)), name(EKI_OK)) << "length " << len;
+    EXPECT_EQ(name(scenarios::verify(second_pk, msg, sig)), name(EKI_ERR_AUTH_FAILED))
+        << "length " << len;
   }
 }
 

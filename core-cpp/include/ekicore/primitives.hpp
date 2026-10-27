@@ -54,4 +54,15 @@ using mut_bytes = std::span<std::uint8_t>;
 // signatures are accepted.
 [[nodiscard]] eki_status ecdsa_p256_verify(bytes public_key65, bytes msg, bytes sig64) noexcept;
 
+// RFC 3394 AES Key Wrap of a 32-byte key under a 32-byte KEK, with the default initial value
+// A6A6A6A6A6A6A6A6. The ABI exposes it only through stored keys (eki_ks_wrap, eki_ks_unwrap).
+// kek32 and key32 are 32 bytes, out40 is 40; key32 and kek32 may be the same memory.
+[[nodiscard]] eki_status aes_256_key_wrap(bytes kek32, bytes key32, mut_bytes out40) noexcept;
+
+// The inverse of aes_256_key_wrap: unwraps blob40 into key32. EKI_ERR_AUTH_FAILED when the blob
+// fails the integrity check (wrong KEK or altered blob). kek32 and key32 are 32 bytes, blob40 is
+// 40. The key is written straight into key32, so a caller that keeps it passes the storage it
+// will live in.
+[[nodiscard]] eki_status aes_256_key_unwrap(bytes kek32, bytes blob40, mut_bytes key32) noexcept;
+
 } // namespace ekicore
