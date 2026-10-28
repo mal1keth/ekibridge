@@ -19,9 +19,9 @@ pkcs11 = ["dep:cryptoki"]
 pq = ["dep:ml-kem", "dep:x25519-dalek"]
 
 [dependencies]
-aes-gcm = "=0.11.1"
+aes-gcm = { version = "=0.11.1", features = ["zeroize"] }
 aes-kw = "=0.3.1"
-chacha20poly1305 = "=0.11.0"
+chacha20poly1305 = { version = "=0.11.0", features = ["zeroize"] }
 cryptoki = { version = "=0.12.1", optional = true }
 ekicore-abi = { path = "../abi" }
 getrandom = "=0.4.3"
@@ -29,6 +29,9 @@ hkdf = "=0.13.0"
 hmac = "=0.13.0"
 ml-kem = { version = "=0.3.3", optional = true }
 p256 = { version = "=0.14.0", features = ["ecdsa"] }
+# Not used directly. The `zeroize` feature of chacha20poly1305 does not forward to poly1305, so this
+# line turns on the wipe of the Poly1305 state (the one-time key) through feature unification.
+poly1305 = { version = "=0.9.1", features = ["zeroize"] }
 secrecy = "=0.10.3"
 sha2 = { version = "=0.11.1", features = ["zeroize"] }
 subtle = "=2.6.1"

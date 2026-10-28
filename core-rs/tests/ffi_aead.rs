@@ -266,7 +266,6 @@ fn open_with(c: &Case, aad: &[u8], ct: &[u8], tag: &[u8]) -> (eki_status, Vec<u8
 // --- vectors ------------------------------------------------------------------------------
 
 #[test]
-#[ignore = "lesson L4"]
 fn vectors_seal() {
     for v in VECTORS {
         let c = case(v);
@@ -278,7 +277,6 @@ fn vectors_seal() {
 }
 
 #[test]
-#[ignore = "lesson L4"]
 fn vectors_open() {
     for v in VECTORS {
         let c = case(v);
@@ -291,7 +289,6 @@ fn vectors_open() {
 // --- §4.4 rows: aead_seal -----------------------------------------------------------------
 
 #[test]
-#[ignore = "lesson L4"]
 fn seal_unknown_alg_is_invalid_and_zeroes_outputs() {
     let c = gcm16();
     for alg in [0, 3, -1, 99, i32::MIN, i32::MAX] {
@@ -313,7 +310,6 @@ fn seal_unknown_alg_is_invalid_and_zeroes_outputs() {
 }
 
 #[test]
-#[ignore = "lesson L4"]
 fn seal_key_len_not_32_is_invalid_and_zeroes_outputs() {
     let c = gcm16();
     let long_key = [0_u8; 33];
@@ -343,7 +339,6 @@ fn seal_key_len_not_32_is_invalid_and_zeroes_outputs() {
 }
 
 #[test]
-#[ignore = "lesson L4"]
 fn seal_nonce_len_not_12_is_invalid() {
     let c = gcm16();
     let long_nonce = [0_u8; 13];
@@ -375,7 +370,6 @@ fn seal_nonce_len_not_12_is_invalid() {
 }
 
 #[test]
-#[ignore = "lesson L4"]
 fn seal_empty_plaintext_with_null_buffers_is_ok() {
     // GCM test case 13: empty plaintext and AAD; `pt`, `ct_out` and `aad` are all NULL.
     let c = case(&VECTORS[2]);
@@ -394,7 +388,6 @@ fn seal_empty_plaintext_with_null_buffers_is_ok() {
 }
 
 #[test]
-#[ignore = "lesson L4"]
 fn seal_aad_null_len_zero_is_ok() {
     // GCM test case 15 has no AAD.
     let c = case(&VECTORS[4]);
@@ -417,7 +410,6 @@ fn seal_aad_null_len_zero_is_ok() {
 }
 
 #[test]
-#[ignore = "lesson L4"]
 fn seal_null_ct_out_is_checked_before_the_selector() {
     // §4.4: `ct_out NULL, pt_len 1, alg 99` → NULL_POINTER (step 1 precedes step 2).
     let c = gcm16();
@@ -436,7 +428,6 @@ fn seal_null_ct_out_is_checked_before_the_selector() {
 }
 
 #[test]
-#[ignore = "lesson L4"]
 fn seal_null_pointers() {
     let c = gcm16();
     let n = c.pt.len();
@@ -518,7 +509,6 @@ fn seal_null_pointers() {
 
 #[cfg(target_pointer_width = "64")]
 #[test]
-#[ignore = "lesson L4"]
 fn seal_pt_len_above_max_is_invalid_and_leaves_ct_out_untouched() {
     let c = gcm16();
     let too_long = usize::try_from(EKI_AEAD_MAX_LEN + 1).expect("64-bit usize");
@@ -553,7 +543,6 @@ fn seal_pt_len_above_max_is_invalid_and_leaves_ct_out_untouched() {
 // --- §4.4 rows: aead_open -----------------------------------------------------------------
 
 #[test]
-#[ignore = "lesson L4"]
 fn open_tag_bit_flipped_is_auth_failed_and_zeroes_pt_out() {
     for c in [gcm16(), chacha282()] {
         for bit in [0, 7, 64, 127] {
@@ -567,7 +556,6 @@ fn open_tag_bit_flipped_is_auth_failed_and_zeroes_pt_out() {
 }
 
 #[test]
-#[ignore = "lesson L4"]
 fn open_aad_changed_is_auth_failed_and_zeroes_pt_out() {
     for c in [gcm16(), chacha282()] {
         let mut aad = c.aad.clone();
@@ -583,7 +571,6 @@ fn open_aad_changed_is_auth_failed_and_zeroes_pt_out() {
 }
 
 #[test]
-#[ignore = "lesson L4"]
 fn open_ct_truncated_by_one_is_auth_failed_and_zeroes_pt_out() {
     for c in [gcm16(), chacha282()] {
         let (status, pt) = open_with(&c, &c.aad, &c.ct[..c.ct.len() - 1], &c.tag);
@@ -594,7 +581,6 @@ fn open_ct_truncated_by_one_is_auth_failed_and_zeroes_pt_out() {
 }
 
 #[test]
-#[ignore = "lesson L4"]
 fn open_ct_byte_flipped_is_auth_failed_and_zeroes_pt_out() {
     for c in [gcm16(), chacha282()] {
         for index in [0, c.ct.len() / 2, c.ct.len() - 1] {
@@ -608,7 +594,6 @@ fn open_ct_byte_flipped_is_auth_failed_and_zeroes_pt_out() {
 }
 
 #[test]
-#[ignore = "lesson L4"]
 fn open_wrong_key_or_nonce_is_auth_failed() {
     for c in [gcm16(), chacha282()] {
         let mut wrong_key = c.clone();
@@ -626,7 +611,6 @@ fn open_wrong_key_or_nonce_is_auth_failed() {
 }
 
 #[test]
-#[ignore = "lesson L4"]
 fn open_ct_len_zero_with_the_right_tag_is_ok() {
     // GCM test case 13, with `ct` and `pt_out` NULL.
     let c = case(&VECTORS[2]);
@@ -656,7 +640,6 @@ fn open_ct_len_zero_with_the_right_tag_is_ok() {
 }
 
 #[test]
-#[ignore = "lesson L4"]
 fn open_unknown_alg_key_len_nonce_len_are_invalid() {
     let c = gcm16();
     let mut pt = prefill(c.ct.len());
@@ -700,7 +683,6 @@ fn open_unknown_alg_key_len_nonce_len_are_invalid() {
 }
 
 #[test]
-#[ignore = "lesson L4"]
 fn open_null_pointers() {
     let c = gcm16();
     let n = c.ct.len();
@@ -799,7 +781,6 @@ fn open_null_pointers() {
 
 #[cfg(target_pointer_width = "64")]
 #[test]
-#[ignore = "lesson L4"]
 fn open_ct_len_above_max_is_invalid_and_leaves_pt_out_untouched() {
     let c = gcm16();
     let too_long = usize::try_from(EKI_AEAD_MAX_LEN + 1).expect("64-bit usize");
@@ -838,7 +819,6 @@ proptest! {
     })]
 
     #[test]
-    #[ignore = "lesson L4"]
     fn seal_open_round_trip(
         gcm in any::<bool>(),
         key in proptest::array::uniform32(any::<u8>()),

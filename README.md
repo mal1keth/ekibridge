@@ -22,7 +22,7 @@ disabled tests are the specification the implementations are written against.
 | ABI, build, CI | done | done | metadata module | n/a |
 | HMAC-SHA256 | done | done | passing | planned |
 | HKDF-SHA256 | done | done | passing | planned |
-| AEAD (AES-256-GCM, ChaCha20-Poly1305) | done | planned | planned | planned |
+| AEAD (AES-256-GCM, ChaCha20-Poly1305) | done | done | passing | planned |
 | ECDSA P-256 verify | done | planned | planned | planned |
 | Key store, software backend | done | planned | planned | planned |
 | Key store, PKCS#11 backend | planned | planned | planned | planned |

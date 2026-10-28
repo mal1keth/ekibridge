@@ -5,3 +5,4 @@
 meta
 hmac
 hkdf
+aead

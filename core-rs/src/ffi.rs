@@ -7,10 +7,10 @@
 //!
 //! # State
 //!
-//! `eki_hmac_sha256`, `eki_hmac_sha256_verify` and `eki_hkdf_sha256` are implemented, as are the
-//! three metadata functions. `eki_ks_close` does nothing, which is correct while `eki_ks_open`
-//! never creates a handle. Every other function is a stub that returns `EKI_ERR_UNSUPPORTED`
-//! without looking at any argument.
+//! `eki_hmac_sha256`, `eki_hmac_sha256_verify`, `eki_hkdf_sha256`, `eki_aead_seal` and
+//! `eki_aead_open` are implemented, as are the three metadata functions. `eki_ks_close` does
+//! nothing, which is correct while `eki_ks_open` never creates a handle. Every other function is
+//! a stub that returns `EKI_ERR_UNSUPPORTED` without looking at any argument.
 //!
 //! # Caller contract
 //!
@@ -70,12 +70,13 @@ use std::any::Any;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use ekicore_abi::{
-    EKI_ABI_VERSION, EKI_HKDF_MAX_INPUT_LEN, EKI_HKDF_MAX_OKM_LEN, EKI_HMAC_SHA256_LEN,
-    eki_aead_alg, eki_key_alg, eki_key_id, eki_key_info, eki_ks, eki_ks_config, eki_status,
+    EKI_ABI_VERSION, EKI_AEAD_TAG_LEN, EKI_HKDF_MAX_INPUT_LEN, EKI_HKDF_MAX_OKM_LEN,
+    EKI_HMAC_SHA256_LEN, eki_aead_alg, eki_key_alg, eki_key_id, eki_key_info, eki_ks,
+    eki_ks_config, eki_status,
 };
 
 use crate::error::Error;
-use crate::{hkdf, hmac};
+use crate::{aead, hkdf, hmac};
 
 /// `eki_version()` result: implementation name, a space, the crate version, and a NUL.
 /// cbindgen:ignore
@@ -153,6 +154,20 @@ impl Input {
     /// nothing is required of `ptr`, which is then never used.
     unsafe fn new(ptr: *const u8, len: usize, max: usize) -> Self {
         Self { ptr, len, max }
+    }
+
+    /// Wraps a fixed-size input of `N` bytes. `N` is not zero, so a NULL `ptr` is always
+    /// rejected, as the contract requires for fixed-size parameters.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` is NULL or valid for reads of `N` bytes within one allocation, and nothing writes
+    /// that memory, for as long as the returned value exists.
+    unsafe fn fixed<const N: usize>(ptr: *const u8) -> Self {
+        const { assert!(N > 0, "a fixed-size input has at least one byte") };
+        // SAFETY: with `len == max == N`, the precondition of `Input::new` is exactly this
+        // function's precondition, which the caller of `fixed` guarantees.
+        unsafe { Self::new(ptr, N, N) }
     }
 
     /// The input as a slice that borrows `self`, so it cannot outlive the wrapper.
@@ -450,7 +465,35 @@ pub unsafe extern "C" fn eki_aead_seal(
     ct_out: *mut u8,
     tag_out: *mut u8,
 ) -> eki_status {
-    eki_status::EKI_ERR_UNSUPPORTED
+    // SAFETY: the C caller guarantees C1 to C3 for `key`/`key_len`, `nonce`/`nonce_len` and
+    // `aad`/`aad_len` (no maximum), for `pt`/`pt_len` and `ct_out`, which is sized by `pt_len`
+    // (each with the maximum `aead::MAX_LEN`), and for the 16-byte `tag_out`, which are the
+    // preconditions of `Input::new`, `Output::new` and `Output::fixed`. C1 holds for `pt` and
+    // `ct_out` only for a length within the maximum; above it the preconditions require nothing
+    // of either pointer, and `bytes` refuses the length before creating a slice. The wrappers are
+    // locals of this call, so they do not outlive that guarantee.
+    let (key, nonce, aad, pt, ct_out, tag_out) = unsafe {
+        (
+            Input::new(key, key_len, NO_MAX),
+            Input::new(nonce, nonce_len, NO_MAX),
+            Input::new(aad, aad_len, NO_MAX),
+            Input::new(pt, pt_len, aead::MAX_LEN),
+            Output::new(ct_out, pt_len, aead::MAX_LEN),
+            Output::fixed::<EKI_AEAD_TAG_LEN>(tag_out),
+        )
+    };
+    barrier([ct_out, tag_out], |[ct_out, tag_out]| {
+        check_null(&[&key, &nonce, &aad, &pt, ct_out, tag_out])?;
+        aead::seal(
+            alg,
+            key.bytes()?,
+            nonce.bytes()?,
+            aad.bytes()?,
+            pt.bytes()?,
+            ct_out.bytes()?,
+            tag_out.bytes()?,
+        )
+    })
 }
 
 /// Verifies the 16-byte `tag` and decrypts `ct` into `pt_out` (`ct_len` bytes). On any failure
@@ -469,7 +512,35 @@ pub unsafe extern "C" fn eki_aead_open(
     tag: *const u8,
     pt_out: *mut u8,
 ) -> eki_status {
-    eki_status::EKI_ERR_UNSUPPORTED
+    // SAFETY: the C caller guarantees C1 to C3 for `key`/`key_len`, `nonce`/`nonce_len` and
+    // `aad`/`aad_len` (no maximum), for `ct`/`ct_len` and `pt_out`, which is sized by `ct_len`
+    // (each with the maximum `aead::MAX_LEN`), and for the 16-byte `tag`, which are the
+    // preconditions of `Input::new`, `Input::fixed` and `Output::new`. C1 holds for `ct` and
+    // `pt_out` only for a length within the maximum; above it the preconditions require nothing
+    // of either pointer, and `bytes` refuses the length before creating a slice. The wrappers are
+    // locals of this call, so they do not outlive that guarantee.
+    let (key, nonce, aad, ct, tag, pt_out) = unsafe {
+        (
+            Input::new(key, key_len, NO_MAX),
+            Input::new(nonce, nonce_len, NO_MAX),
+            Input::new(aad, aad_len, NO_MAX),
+            Input::new(ct, ct_len, aead::MAX_LEN),
+            Input::fixed::<EKI_AEAD_TAG_LEN>(tag),
+            Output::new(pt_out, ct_len, aead::MAX_LEN),
+        )
+    };
+    barrier([pt_out], |[pt_out]| {
+        check_null(&[&key, &nonce, &aad, &ct, &tag, pt_out])?;
+        aead::open(
+            alg,
+            key.bytes()?,
+            nonce.bytes()?,
+            aad.bytes()?,
+            ct.bytes()?,
+            tag.bytes()?,
+            pt_out.bytes()?,
+        )
+    })
 }
 
 /// Verifies a 64-byte `r || s` ECDSA P-256 signature over SHA-256 of `msg` against a 65-byte
@@ -663,6 +734,20 @@ mod tests {
         assert_eq!(output.bytes(), Err(Error::NullPointer));
         assert_eq!(check_null(&[&input]), Err(Error::NullPointer));
         assert_eq!(check_null(&[&output]), Err(Error::NullPointer));
+    }
+
+    #[test]
+    fn fixed_input_is_never_empty_and_is_rejected_when_null() {
+        let buf = [1_u8, 2, 3, 4];
+        // SAFETY: `buf` is a live local array of 4 bytes that nothing writes while `input` exists.
+        let input = unsafe { Input::fixed::<4>(buf.as_ptr()) };
+        assert_eq!(check_null(&[&input]), Ok(()));
+        assert_eq!(input.bytes(), Ok(&buf[..]));
+
+        // SAFETY: the pointer is NULL, which the preconditions allow; it is never dereferenced.
+        let null = unsafe { Input::fixed::<4>(core::ptr::null()) };
+        assert_eq!(check_null(&[&null]), Err(Error::NullPointer));
+        assert_eq!(null.bytes(), Err(Error::NullPointer));
     }
 
     #[test]
