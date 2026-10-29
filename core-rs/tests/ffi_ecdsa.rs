@@ -58,7 +58,6 @@ fn sig(r: &str, s: &str) -> [u8; 64] {
 }
 
 #[test]
-#[ignore = "lesson L5"]
 fn rfc6979_vectors() {
     let pk = public_key();
     for (msg, sig) in [(&b"sample"[..], SIG_SAMPLE), (&b"test"[..], SIG_TEST)] {
@@ -73,7 +72,6 @@ fn rfc6979_vectors() {
 }
 
 #[test]
-#[ignore = "lesson L5"]
 fn high_and_low_s_both_verify() {
     let pk = public_key();
     for s in [SIG_SAMPLE, SIG_SAMPLE_OTHER_S] {
@@ -83,7 +81,6 @@ fn high_and_low_s_both_verify() {
 }
 
 #[test]
-#[ignore = "lesson L5"]
 fn empty_message_with_null_pointer() {
     let pk = public_key();
     let sig: [u8; 64] = hex_array(SIG_EMPTY);
@@ -95,7 +92,6 @@ fn empty_message_with_null_pointer() {
 // --- §4.4 rows ----------------------------------------------------------------------------
 
 #[test]
-#[ignore = "lesson L5"]
 fn public_key_prefix_not_04_is_invalid() {
     let sig: [u8; 64] = hex_array(SIG_SAMPLE);
     for prefix in [0x00, 0x02, 0x03, 0x05, 0x06, 0x07, 0xff] {
@@ -110,7 +106,6 @@ fn public_key_prefix_not_04_is_invalid() {
 }
 
 #[test]
-#[ignore = "lesson L5"]
 fn off_curve_point_is_invalid() {
     let sig: [u8; 64] = hex_array(SIG_SAMPLE);
     let mut pk = public_key();
@@ -131,7 +126,6 @@ fn off_curve_point_is_invalid() {
 }
 
 #[test]
-#[ignore = "lesson L5"]
 fn coordinate_not_below_p_is_invalid() {
     let sig: [u8; 64] = hex_array(SIG_SAMPLE);
     let p = hex(P);
@@ -152,7 +146,6 @@ fn coordinate_not_below_p_is_invalid() {
 }
 
 #[test]
-#[ignore = "lesson L5"]
 fn r_or_s_out_of_range_is_auth_failed() {
     let pk = public_key();
     let (r, s) = SIG_SAMPLE.split_at(64);
@@ -175,7 +168,6 @@ fn r_or_s_out_of_range_is_auth_failed() {
 }
 
 #[test]
-#[ignore = "lesson L5"]
 fn signature_over_other_message_is_auth_failed() {
     let pk = public_key();
     let sig: [u8; 64] = hex_array(SIG_SAMPLE);
@@ -191,7 +183,6 @@ fn signature_over_other_message_is_auth_failed() {
 }
 
 #[test]
-#[ignore = "lesson L5"]
 fn signature_bit_flip_is_auth_failed() {
     let pk = public_key();
     for byte in [0, 31, 32, 63] {
@@ -206,7 +197,6 @@ fn signature_bit_flip_is_auth_failed() {
 }
 
 #[test]
-#[ignore = "lesson L5"]
 fn null_pointers() {
     let pk = public_key();
     let sig: [u8; 64] = hex_array(SIG_SAMPLE);

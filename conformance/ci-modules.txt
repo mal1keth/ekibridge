@@ -6,3 +6,4 @@ meta
 hmac
 hkdf
 aead
+ecdsa

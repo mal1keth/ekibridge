@@ -7,10 +7,11 @@
 //!
 //! # State
 //!
-//! `eki_hmac_sha256`, `eki_hmac_sha256_verify`, `eki_hkdf_sha256`, `eki_aead_seal` and
-//! `eki_aead_open` are implemented, as are the three metadata functions. `eki_ks_close` does
-//! nothing, which is correct while `eki_ks_open` never creates a handle. Every other function is
-//! a stub that returns `EKI_ERR_UNSUPPORTED` without looking at any argument.
+//! `eki_hmac_sha256`, `eki_hmac_sha256_verify`, `eki_hkdf_sha256`, `eki_aead_seal`,
+//! `eki_aead_open` and `eki_ecdsa_p256_verify` are implemented, as are the three metadata
+//! functions. `eki_ks_close` does nothing, which is correct while `eki_ks_open` never creates a
+//! handle. Every other function is a stub that returns `EKI_ERR_UNSUPPORTED` without looking at
+//! any argument.
 //!
 //! # Caller contract
 //!
@@ -71,12 +72,12 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use ekicore_abi::{
     EKI_ABI_VERSION, EKI_AEAD_TAG_LEN, EKI_HKDF_MAX_INPUT_LEN, EKI_HKDF_MAX_OKM_LEN,
-    EKI_HMAC_SHA256_LEN, eki_aead_alg, eki_key_alg, eki_key_id, eki_key_info, eki_ks,
-    eki_ks_config, eki_status,
+    EKI_HMAC_SHA256_LEN, EKI_P256_PUBLIC_KEY_LEN, EKI_P256_SIGNATURE_LEN, eki_aead_alg,
+    eki_key_alg, eki_key_id, eki_key_info, eki_ks, eki_ks_config, eki_status,
 };
 
 use crate::error::Error;
-use crate::{aead, hkdf, hmac};
+use crate::{aead, ecdsa, hkdf, hmac};
 
 /// `eki_version()` result: implementation name, a space, the crate version, and a NUL.
 /// cbindgen:ignore
@@ -552,7 +553,20 @@ pub unsafe extern "C" fn eki_ecdsa_p256_verify(
     msg_len: usize,
     sig: *const u8,
 ) -> eki_status {
-    eki_status::EKI_ERR_UNSUPPORTED
+    // SAFETY: the C caller guarantees C1 and C2 for the 65-byte `public_key`, for `msg`/`msg_len`
+    // (no maximum) and for the 64-byte `sig`, which are the preconditions of `Input::fixed` and
+    // `Input::new`. The wrappers are locals of this call, so they do not outlive that guarantee.
+    let (public_key, msg, sig) = unsafe {
+        (
+            Input::fixed::<EKI_P256_PUBLIC_KEY_LEN>(public_key),
+            Input::new(msg, msg_len, NO_MAX),
+            Input::fixed::<EKI_P256_SIGNATURE_LEN>(sig),
+        )
+    };
+    barrier([], |[]| {
+        check_null(&[&public_key, &msg, &sig])?;
+        ecdsa::p256_verify(public_key.bytes()?, msg.bytes()?, sig.bytes()?)
+    })
 }
 
 /// Opens a key store as described by `config` and stores the handle in `*out`.
