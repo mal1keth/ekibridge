@@ -68,7 +68,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   const auto opened = static_cast<int32_t>(eki_ks_open(&config, &handle));
   ekifuzz::require_status_in_range(opened);
   if (opened != EKI_OK) {
-    // The key store is still a stub (EKI_ERR_UNSUPPORTED): nothing more to exercise.
+    // Opening a software store fails only when an allocation inside eki_ks_open fails
+    // (EKI_ERR_INTERNAL): nothing more to exercise.
     require(handle == nullptr);
     return 0;
   }

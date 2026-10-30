@@ -16,13 +16,11 @@
 #include <openssl/param_build.h>
 #include <openssl/params.h>
 
-#include <array>
 #include <climits>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <span>
-#include <string>
 
 namespace ekicore::ossl {
 
@@ -47,22 +45,6 @@ using ecdsa_sig = std::unique_ptr<ECDSA_SIG, deleter<&ECDSA_SIG_free>>;
 using ec_group = std::unique_ptr<EC_GROUP, deleter<&EC_GROUP_free>>;
 using param_bld = std::unique_ptr<OSSL_PARAM_BLD, deleter<&OSSL_PARAM_BLD_free>>;
 using params = std::unique_ptr<OSSL_PARAM, deleter<&OSSL_PARAM_free>>;
-
-// Drains this thread's OpenSSL error queue into one line ("error:...; error:..."), oldest first.
-// Returns "" when the queue is empty. Meant for the key store's last-error message; it allocates,
-// so it may throw std::bad_alloc, which the FFI barrier turns into EKI_ERR_INTERNAL.
-inline std::string last_openssl_error() {
-  std::string message;
-  std::array<char, 256> line{};
-  for (unsigned long code = ERR_get_error(); code != 0; code = ERR_get_error()) {
-    ERR_error_string_n(code, line.data(), line.size());
-    if (!message.empty()) {
-      message += "; ";
-    }
-    message += line.data();
-  }
-  return message;
-}
 
 // Confines the entries that one primitive call pushes onto this thread's OpenSSL error queue to
 // that call. The queue is shared with the rest of the process, so entries that were already on it
