@@ -19,6 +19,7 @@
 
 #include <ekicore.h>
 #include <ekicore/primitives.hpp>
+#include <ekicore/secret_buffer.hpp>
 
 #include <array>
 #include <cstddef>
@@ -55,14 +56,19 @@ enum class key_alg : std::uint8_t {
 }
 
 // A label that passed the contract's format check: 1 to 64 bytes, each in 0x20..0x7E. The only
-// way to make one is parse(), so a backend never receives an unchecked label. Stored inline, so
-// copying one allocates nothing.
+// ways to make one are parse() and from_bytes(), which apply the same rule, so a backend never
+// receives an unchecked label and never reports one. Stored inline, so copying one allocates
+// nothing.
 class key_label {
 public:
   // Reads the NUL-terminated text at most EKI_LABEL_MAX_LEN + 1 bytes far and returns the label,
   // or nullopt when the text is empty, longer than EKI_LABEL_MAX_LEN bytes, unterminated within
   // that bound, or holds a byte outside 0x20..0x7E. text must not be NULL.
   [[nodiscard]] static std::optional<key_label> parse(const char* text) noexcept;
+
+  // The label made of exactly these bytes (no NUL), as a backend reads it back from storage (a
+  // token's CKA_LABEL), or nullopt when they break the rule above.
+  [[nodiscard]] static std::optional<key_label> from_bytes(std::span<const char> text) noexcept;
 
   [[nodiscard]] std::string_view view() const noexcept {
     return {text_.data(), size_};
@@ -82,6 +88,17 @@ struct key_info {
 
   key_alg alg;
   key_label label;
+};
+
+// What a backend's find reports about an id. exists: some object carries the id. info: the key's
+// algorithm and label, set exactly when the objects carrying the id form one of the library's key
+// shapes with a valid label. An object that exists without info (a PKCS#11 object another
+// program created: a certificate, a key of another type, a label that breaks the rule) still
+// takes the id: unwrap answers KEY_EXISTS and destroy removes it, while an operation that needs
+// the algorithm or the label answers EKI_ERR_BACKEND.
+struct key_lookup {
+  bool exists = false;
+  std::optional<key_info> info;
 };
 
 // The result of a backend operation. status is EKI_OK, or the status of the failure: normally
@@ -113,9 +130,8 @@ public:
   // (PKCS#11); it must not throw.
   virtual ~backend() = default;
 
-  // Sets found to the algorithm and label of the key that id names, or to nullopt when no object
-  // of any class carries id.
-  [[nodiscard]] virtual outcome find(const key_id& id, std::optional<key_info>& found) = 0;
+  // Reports whether any object, of any class, carries id, and if so what key it is (key_lookup).
+  [[nodiscard]] virtual outcome find(const key_id& id, key_lookup& found) = 0;
 
   // Creates a new key of alg under id. Precondition: no object carries id. On failure nothing is
   // created and existing keys are unchanged.
@@ -146,7 +162,7 @@ public:
                                        const key_label& label, const key_id& id) = 0;
 
   // Removes every object that carries id; for the software backend that wipes the key material.
-  // Precondition: id names a key.
+  // Precondition: some object carries id (it need not be a key the library can represent).
   [[nodiscard]] virtual outcome destroy(const key_id& id) = 0;
 
 protected:
@@ -155,6 +171,26 @@ protected:
 
 // The software backend (src/keystore/software.cpp): an in-memory map for the handle's lifetime.
 [[nodiscard]] std::unique_ptr<backend> make_software_backend();
+
+// The longest token label (CK_TOKEN_INFO.label holds 32 bytes, blank-padded) and the longest PIN
+// that eki_ks_open accepts.
+inline constexpr std::size_t pkcs11_token_label_max_len = 32;
+inline constexpr std::size_t pkcs11_user_pin_max_len = 255;
+
+// The configuration of a PKCS#11 store once layer 2 has checked it: copies of the caller's
+// strings, so that the library keeps no caller pointer. The PIN lives in a secret_buffer, which
+// wipes it when the configuration is destroyed.
+struct pkcs11_config {
+  std::string module_path;
+  std::string token_label; // 1..=pkcs11_token_label_max_len printable bytes
+  secret_buffer user_pin;  // 1..=pkcs11_user_pin_max_len bytes
+};
+
+// The PKCS#11 backend (src/keystore/pkcs11.cpp, compiled when EKI_WITH_PKCS11 is on): loads the
+// module, finds the token, opens a session and logs in. Every failure is EKI_ERR_BACKEND and
+// leaves out empty. config is taken by value, so the PIN copy is wiped as soon as this returns,
+// that is, right after the login.
+[[nodiscard]] outcome make_pkcs11_backend(pkcs11_config config, std::unique_ptr<backend>& out);
 
 } // namespace ekicore::keystore
 

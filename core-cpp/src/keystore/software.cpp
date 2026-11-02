@@ -119,12 +119,13 @@ outcome precondition_failed() {
 
 class software_backend final : public backend {
 public:
-  outcome find(const key_id& id, std::optional<key_info>& found) override {
+  // Every entry is a key the library created, so an id that exists always has its info.
+  outcome find(const key_id& id, key_lookup& found) override {
     const auto entry = keys_.find(id);
-    if (entry == keys_.end()) {
-      found.reset();
-    } else {
-      found.emplace(entry->second.alg, entry->second.label);
+    found = key_lookup{};
+    if (entry != keys_.end()) {
+      found.exists = true;
+      found.info.emplace(entry->second.alg, entry->second.label);
     }
     return {};
   }

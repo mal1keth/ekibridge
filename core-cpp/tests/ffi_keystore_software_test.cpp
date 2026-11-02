@@ -66,10 +66,8 @@ TEST(FfiKeystoreSoftware, OpenUnknownBackendIsInvalid) {
 }
 
 // §4.4: PKCS#11 with `module_path NULL` → NULL_POINTER (UNSUPPORTED if PKCS#11 is not compiled
-// in: the selector check, step 2, answers first). Disabled until the PKCS#11 backend exists: until
-// then the library answers EKI_KS_PKCS11 as not compiled in even when EKI_WITH_PKCS11 is on, while
-// kWithPkcs11 follows EKI_WITH_PKCS11.
-TEST(FfiKeystoreSoftware, DISABLED_OpenPkcs11WithNullModulePath) {
+// in: the selector check, step 2, answers first).
+TEST(FfiKeystoreSoftware, OpenPkcs11WithNullModulePath) {
   const eki_status expected = eki_test::kWithPkcs11 ? EKI_ERR_NULL_POINTER : EKI_ERR_UNSUPPORTED;
   EXPECT_TRUE(open_fails(eki_ks_config{EKI_KS_PKCS11, nullptr, "ekibridge", "1234"}, expected));
 }

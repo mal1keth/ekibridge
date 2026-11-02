@@ -22,7 +22,12 @@ include(GoogleTest)
 file(GLOB EKI_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*_test.cpp")
 
 add_executable(ekicore_tests ${EKI_TEST_SOURCES})
-target_link_libraries(ekicore_tests PRIVATE ekicore ekicore_warnings GTest::gtest_main)
+target_link_libraries(ekicore_tests PRIVATE ekicore ekicore_warnings GTest::gtest_main
+  ${CMAKE_DL_LIBS})
+# The PKCS#11 tests reach the token directly through the module too, to create objects the library
+# did not make; they compile against the same vendored interface header as the library.
+target_include_directories(ekicore_tests SYSTEM PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/pkcs11")
 
 # The tests cannot see the library's private EKI_WITH_* definitions, so the values are forwarded.
 target_compile_definitions(ekicore_tests PRIVATE

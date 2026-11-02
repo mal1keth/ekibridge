@@ -11,6 +11,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <span>
@@ -33,23 +35,45 @@ std::optional<key_alg> parse_key_alg(eki_key_alg alg) noexcept {
   }
 }
 
-std::optional<key_label> key_label::parse(const char* text) noexcept {
-  // The loop reads text[0] to text[EKI_LABEL_MAX_LEN] at most: 65 bytes, the contract's bound.
-  // The comparison is on the byte value, so it holds whether char is signed or not.
-  std::size_t len = 0;
-  while (len <= EKI_LABEL_MAX_LEN && text[len] != '\0') {
-    const auto byte = static_cast<unsigned char>(text[len]);
-    if (byte < 0x20 || byte > 0x7E) {
-      return std::nullopt;
+namespace {
+
+// The length of the NUL-terminated text, found by reading at most max_len + 1 bytes, or nullopt
+// when no NUL is among them (the text is longer than max_len).
+std::optional<std::size_t> bounded_length(const char* text, std::size_t max_len) noexcept {
+  for (std::size_t len = 0; len <= max_len; ++len) {
+    if (text[len] == '\0') {
+      return len;
     }
-    ++len;
   }
-  if (len == 0 || len > EKI_LABEL_MAX_LEN) {
+  return std::nullopt;
+}
+
+// Whether every byte is printable ASCII (0x20..0x7E). The comparison is on the byte value, so it
+// holds whether char is signed or not.
+bool printable(std::span<const char> text) noexcept {
+  return std::ranges::all_of(text, [](char c) {
+    const auto byte = static_cast<unsigned char>(c);
+    return byte >= 0x20 && byte <= 0x7E;
+  });
+}
+
+} // namespace
+
+std::optional<key_label> key_label::parse(const char* text) noexcept {
+  const std::optional<std::size_t> len = bounded_length(text, EKI_LABEL_MAX_LEN);
+  if (!len.has_value()) {
+    return std::nullopt;
+  }
+  return from_bytes({text, *len});
+}
+
+std::optional<key_label> key_label::from_bytes(std::span<const char> text) noexcept {
+  if (text.empty() || text.size() > EKI_LABEL_MAX_LEN || !printable(text)) {
     return std::nullopt;
   }
   key_label label;
-  std::copy_n(text, len, label.text_.begin());
-  label.size_ = len;
+  std::ranges::copy(text, label.text_.begin());
+  label.size_ = text.size();
   return label;
 }
 
@@ -105,18 +129,33 @@ eki_status record(eki_ks& ks, outcome result) {
   return result.status;
 }
 
+// Whether some object carries id (EKI_OK with exists set), or the backend's failure.
+eki_status id_taken(eki_ks& ks, const key_id& id, bool& exists) {
+  key_lookup found;
+  const eki_status status = record(ks, ks.backend->find(id, found));
+  exists = found.exists;
+  return status;
+}
+
 // The key that id names. When there is none the result is nullopt and status says why:
-// EKI_ERR_KEY_NOT_FOUND when no object carries id, or the backend's failure.
+// EKI_ERR_KEY_NOT_FOUND when no object carries id; EKI_ERR_BACKEND when the objects that carry it
+// are not a key the library can represent (a foreign object, plan 4.3); or the backend's failure.
 std::optional<key_info> find_existing(eki_ks& ks, const key_id& id, eki_status& status) {
-  std::optional<key_info> found;
+  key_lookup found;
   status = record(ks, ks.backend->find(id, found));
   if (status != EKI_OK) {
     return std::nullopt;
   }
-  if (!found.has_value()) {
+  if (!found.exists) {
     status = EKI_ERR_KEY_NOT_FOUND;
+  } else if (!found.info.has_value()) {
+    status = record(ks, outcome{
+                            .status = EKI_ERR_BACKEND,
+                            .detail = "the objects that carry this key id are not a key of a "
+                                      "type and label this library can use",
+                        });
   }
-  return found;
+  return found.info;
 }
 
 // The key id exists and has algorithm `wanted`: KEY_NOT_FOUND, then WRONG_KEY_TYPE.
@@ -140,16 +179,55 @@ eki_status new_key_id(eki_ks& ks, key_id& id) {
   if (RAND_bytes(id.data(), static_cast<int>(id.size())) != 1) {
     return record(ks, openssl_failure("RAND_bytes for a key id"));
   }
-  std::optional<key_info> found;
-  const eki_status status = record(ks, ks.backend->find(id, found));
+  bool taken = false;
+  const eki_status status = id_taken(ks, id, taken);
   if (status != EKI_OK) {
     return status;
   }
-  if (found.has_value()) {
+  if (taken) {
     return record(
         ks, outcome{.status = EKI_ERR_BACKEND, .detail = "the random key id is already in use"});
   }
   return EKI_OK;
+}
+
+// The PKCS#11 part of eki_ks_open, after the selector check: validation steps 2 and 3 for the
+// configuration fields, then the backend. Without EKI_WITH_PKCS11 the selector names a backend
+// that is not compiled in, which step 2 answers with EKI_ERR_UNSUPPORTED before any field is
+// looked at. With it, the three fields are checked for NULL in field order before any format
+// check, so a NULL field wins over a malformed other field; then the token label (1..=32
+// printable bytes) and the PIN (1..=255 bytes), each read no further than one byte past its
+// maximum. Every failure after that is EKI_ERR_BACKEND, reported as a status only: there is no
+// handle to carry a message.
+eki_status open_pkcs11([[maybe_unused]] const eki_ks_config& config,
+                       [[maybe_unused]] std::unique_ptr<backend>& out) {
+#ifdef EKI_WITH_PKCS11
+  if (config.pkcs11_module_path == nullptr || config.pkcs11_token_label == nullptr ||
+      config.pkcs11_user_pin == nullptr) {
+    return EKI_ERR_NULL_POINTER;
+  }
+  const std::optional<std::size_t> label_len =
+      bounded_length(config.pkcs11_token_label, pkcs11_token_label_max_len);
+  if (!label_len.has_value() || *label_len == 0 ||
+      !printable({config.pkcs11_token_label, *label_len})) {
+    return EKI_ERR_INVALID_ARGUMENT;
+  }
+  const std::optional<std::size_t> pin_len =
+      bounded_length(config.pkcs11_user_pin, pkcs11_user_pin_max_len);
+  if (!pin_len.has_value() || *pin_len == 0) {
+    return EKI_ERR_INVALID_ARGUMENT;
+  }
+  // The library keeps no caller pointer: the strings are copied, the PIN into a secret_buffer.
+  pkcs11_config copied{
+      .module_path = config.pkcs11_module_path,
+      .token_label = std::string{config.pkcs11_token_label, *label_len},
+      .user_pin = secret_buffer::copy_of(
+          bytes{reinterpret_cast<const std::uint8_t*>(config.pkcs11_user_pin), *pin_len}),
+  };
+  return make_pkcs11_backend(std::move(copied), out).status;
+#else
+  return EKI_ERR_UNSUPPORTED;
+#endif
 }
 
 // Fills info_out: the algorithm, and the label NUL-padded through byte 64.
@@ -169,12 +247,16 @@ eki_status open(const eki_ks_config& config, eki_ks*& out) {
     // The software backend ignores the PKCS#11 fields of the configuration.
     store_backend = make_software_backend();
     break;
-  case EKI_KS_PKCS11:
-    // PKCS#11 BACKEND: constructed here once it exists, after the checks of its configuration
-    // fields (NULL checks in field order, then the token label and PIN formats). Until then the
-    // selector is answered as for a backend that is not compiled in (validation step 2),
-    // whatever EKI_WITH_PKCS11 says.
-    return EKI_ERR_UNSUPPORTED;
+  case EKI_KS_PKCS11: {
+    // A module that uses the same libcrypto as this library may push entries onto the caller's
+    // error queue while it initialises and logs in; they are confined to this call.
+    ossl::error_scope errors;
+    const eki_status status = errors.settle(open_pkcs11(config, store_backend));
+    if (status != EKI_OK) {
+      return status;
+    }
+    break;
+  }
   default:
     return EKI_ERR_INVALID_ARGUMENT;
   }
@@ -290,12 +372,12 @@ eki_status unwrap(eki_ks& ks, const key_id& kek, bytes blob, eki_key_alg alg, co
     if (status != EKI_OK) {
       return status;
     }
-    std::optional<key_info> taken;
-    status = record(ks, ks.backend->find(id, taken));
+    bool taken = false;
+    status = id_taken(ks, id, taken);
     if (status != EKI_OK) {
       return status;
     }
-    if (taken.has_value()) {
+    if (taken) {
       return EKI_ERR_KEY_EXISTS;
     }
     return record(ks, ks.backend->unwrap(kek, blob, *parsed_alg, *parsed_label, id));
@@ -304,9 +386,14 @@ eki_status unwrap(eki_ks& ks, const key_id& kek, bytes blob, eki_key_alg alg, co
 
 eki_status destroy(eki_ks& ks, const key_id& id) {
   return run(ks, [&] {
-    eki_status status = EKI_OK;
-    if (!find_existing(ks, id, status).has_value()) {
+    // Any object that carries the id can be destroyed, a foreign one included (plan 4.3).
+    bool exists = false;
+    const eki_status status = id_taken(ks, id, exists);
+    if (status != EKI_OK) {
       return status;
+    }
+    if (!exists) {
+      return EKI_ERR_KEY_NOT_FOUND;
     }
     return record(ks, ks.backend->destroy(id));
   });

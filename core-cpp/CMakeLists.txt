@@ -58,6 +58,18 @@ add_library(ekicore SHARED
   src/keystore/software.cpp)
 set_target_properties(ekicore PROPERTIES OUTPUT_NAME ekicore)
 
+# The PKCS#11 backend loads its module at run time with dlopen, so no PKCS#11 library is linked;
+# it compiles against the vendored interface header, as a system include so that the project's
+# warnings and clang-tidy do not apply to it. Without EKI_WITH_PKCS11 the store logic answers
+# EKI_KS_PKCS11 with EKI_ERR_UNSUPPORTED and none of this is built.
+if(EKI_WITH_PKCS11)
+  target_sources(ekicore PRIVATE
+    src/keystore/pkcs11.cpp
+    src/keystore/pkcs11_module.cpp)
+  target_include_directories(ekicore SYSTEM PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/pkcs11")
+  target_link_libraries(ekicore PRIVATE ${CMAKE_DL_LIBS})
+endif()
+
 target_include_directories(ekicore
   PUBLIC  "${PROJECT_SOURCE_DIR}/include"
   PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")

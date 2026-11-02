@@ -1,0 +1,27 @@
+pkcs11.h: the PKCS #11 interface header (types, constants and the function list) that the
+PKCS#11 key store backend compiles against. No library is linked: the module is loaded at run
+time with dlopen.
+
+Source:   p11-kit 0.26.5, installed file p11-kit-1/p11-kit/pkcs11.h
+          (upstream: https://github.com/p11-glue/p11-kit, common/pkcs11.h)
+Changes:  none
+SHA-256:  669d76b12dfdb36001a31685f21f94d8c51d108db6487f5af3724dfbd486699b
+
+Licence (the notice at the top of the file, preserved there unchanged):
+
+   Copyright 2006, 2007 g10 Code GmbH
+   Copyright 2006 Andreas Jellinghaus
+   Copyright 2017, 2021-2025 Red Hat, Inc.
+
+   This file is free software; as a special exception the author gives
+   unlimited permission to copy and/or distribute it, with or without
+   modifications, as long as this notice is preserved.
+
+   This file is distributed in the hope that it will be useful, but
+   WITHOUT ANY WARRANTY, to the extent permitted by law; without even
+   the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+   PURPOSE.
+
+The header is included as a SYSTEM include, so the project's warning flags and clang-tidy do not
+apply to it. It is used in its default compatibility mode (the names of the PKCS #11
+specification: CK_ATTRIBUTE, pValue, ...).

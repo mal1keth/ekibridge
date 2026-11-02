@@ -14,7 +14,9 @@
 // the ks NULL check, so that a call with another NULL pointer still resets the handle's last-error
 // text like every other call on it. eki_ks_last_error_message and eki_ks_close return no status
 // and have no barrier: the first catches the one exception it can meet (taking the lock), the
-// second cannot throw. Only the software backend exists; EKI_KS_PKCS11 answers EKI_ERR_UNSUPPORTED.
+// second cannot throw. eki_ks_open hands the configuration to the store logic, which checks the
+// backend selector and, for EKI_KS_PKCS11, the configuration fields; when the library is built
+// without EKI_WITH_PKCS11, EKI_KS_PKCS11 answers EKI_ERR_UNSUPPORTED.
 //
 // The hybrid KEM functions are still stubs that answer EKI_ERR_UNSUPPORTED without touching their
 // arguments.
