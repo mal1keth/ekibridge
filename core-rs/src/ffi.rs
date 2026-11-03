@@ -7,11 +7,10 @@
 //!
 //! # State
 //!
-//! `eki_hmac_sha256`, `eki_hmac_sha256_verify`, `eki_hkdf_sha256`, `eki_aead_seal`,
-//! `eki_aead_open` and `eki_ecdsa_p256_verify` are implemented, as are the three metadata
-//! functions. `eki_ks_close` does nothing, which is correct while `eki_ks_open` never creates a
-//! handle. Every other function is a stub that returns `EKI_ERR_UNSUPPORTED` without looking at
-//! any argument.
+//! Every function is implemented except the three hybrid KEM functions, which are stubs that
+//! return `EKI_ERR_UNSUPPORTED` without looking at any argument. The key store functions serve
+//! the software backend; `eki_ks_open` answers `EKI_ERR_UNSUPPORTED` for `EKI_KS_PKCS11` until
+//! that backend exists.
 //!
 //! # Caller contract
 //!
@@ -31,6 +30,18 @@
 //!   thread included) writes it meanwhile, nor reads an output buffer. The library keeps no
 //!   pointer after returning.
 //! - **C3, no overlap.** No output buffer overlaps any other buffer parameter.
+//! - **C4, structs.** A non-NULL pointer to a struct or pointer parameter (`const eki_key_id *`,
+//!   `eki_key_id *`, `eki_key_info *`, `const eki_ks_config *`, `eki_ks **`) is aligned for its
+//!   type and valid, by C1 and C2, for one value of it: its `sizeof` bytes in one live
+//!   allocation, holding an initialised value for an input. Only `eki_ks_config`'s `backend`
+//!   field is used; its string fields are never read by the software backend.
+//! - **C5, handles.** A non-NULL `eki_ks *` is a value `eki_ks_open` returned that has not been
+//!   passed to `eki_ks_close`. Any number of threads may use one handle at the same time;
+//!   `eki_ks_close` does not run at the same time as any other call on that handle, and the
+//!   handle is not used after it.
+//! - **C6, labels.** A non-NULL `label` points to a NUL-terminated string, or to at least 65
+//!   readable bytes; the library reads up to the first NUL or 65 bytes, whichever comes first,
+//!   and nothing writes those bytes during the call.
 //!
 //! A NULL pointer with a non-zero length does not break the contract: the call reports it as
 //! `EKI_ERR_NULL_POINTER`. A pointer, NULL or not, that comes with length zero is an empty buffer
@@ -51,9 +62,18 @@
 //!    `bytes`, which rejects a length above its maximum before any slice exists, and call the
 //!    safe module, which performs the remaining checks.
 //!
+//! A key store function differs in step 3 only. `HandleIn::begin` checks `ks` first, then takes
+//! the handle's lock and resets the last-error message; `check_null` then covers the remaining
+//! pointer parameters in parameter order. The status is the one a single `check_null` over all
+//! parameters would give, and a call that fails on a NULL `id` or `label` still resets the
+//! message, as plan 4.2 ("Last error") requires of every store call. The body then calls the
+//! store logic (`keystore::Store`) with the lock held, and writes the outputs.
+//! `eki_ks_last_error_message` and `eki_ks_close` return no status, so they use
+//! `contain_panic`, the panic barrier without the status mapping.
+//!
 //! # Panics
 //!
-//! A panic in a body is caught by `barrier` and never unwinds into C. This depends on the panic
+//! A panic in a body is caught by `barrier` (or `contain_panic`) and never unwinds into C. This depends on the panic
 //! strategy being `unwind`, which the root `Cargo.toml` sets for the release profile (and which
 //! is the default for the others). Under `panic = "abort"`, `catch_unwind` has nothing to catch:
 //! a panic terminates the whole host process before `barrier` regains control, so the caller
@@ -69,14 +89,17 @@
 use core::ffi::{CStr, c_char};
 use std::any::Any;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::MutexGuard;
 
 use ekicore_abi::{
     EKI_ABI_VERSION, EKI_AEAD_TAG_LEN, EKI_HKDF_MAX_INPUT_LEN, EKI_HKDF_MAX_OKM_LEN,
-    EKI_HMAC_SHA256_LEN, EKI_P256_PUBLIC_KEY_LEN, EKI_P256_SIGNATURE_LEN, eki_aead_alg,
-    eki_key_alg, eki_key_id, eki_key_info, eki_ks, eki_ks_config, eki_status,
+    EKI_HMAC_SHA256_LEN, EKI_LABEL_MAX_LEN, EKI_P256_PUBLIC_KEY_LEN, EKI_P256_SIGNATURE_LEN,
+    EKI_WRAPPED_KEY_LEN, eki_aead_alg, eki_key_alg, eki_key_id, eki_key_info, eki_ks,
+    eki_ks_config, eki_status,
 };
 
 use crate::error::Error;
+use crate::keystore::{self, Handle, KeyId, Store};
 use crate::{aead, ecdsa, hkdf, hmac};
 
 /// `eki_version()` result: implementation name, a space, the crate version, and a NUL.
@@ -257,7 +280,21 @@ impl Output {
         // lives, and by C3 no other parameter's slice overlaps it.
         Ok(unsafe { core::slice::from_raw_parts_mut(self.ptr, self.len) })
     }
+}
 
+impl PointerParam for Output {
+    fn non_null(&self) -> Result<(), Error> {
+        pair_non_null(self.ptr.is_null(), self.len)
+    }
+}
+
+/// An output parameter, as seen by the "outputs on error" rule.
+trait OutputParam: PointerParam {
+    /// Zero-fills the output if the rule covers it; otherwise leaves it untouched.
+    fn zero(&mut self);
+}
+
+impl OutputParam for Output {
     /// Zero-fills the buffer if it is non-NULL and its length is within the maximum, the "outputs
     /// on error" rule; otherwise leaves it untouched.
     fn zero(&mut self) {
@@ -272,45 +309,56 @@ impl Output {
     }
 }
 
-impl PointerParam for Output {
-    fn non_null(&self) -> Result<(), Error> {
-        pair_non_null(self.ptr.is_null(), self.len)
-    }
-}
+/// The outputs of a function that has none, for `barrier`.
+/// cbindgen:ignore
+const NO_OUTPUTS: [Output; 0] = [];
 
 /// Runs the body of an `extern "C"` function and returns its status. This is the panic barrier:
 /// nothing but the returned status leaves it.
 ///
-/// `outputs` are all output buffers of the call. On any status other than `EKI_OK` each of them
-/// is zero-filled by `Output::zero`, after the body has returned or unwound, so the rule also
-/// holds when the failure was a NULL pointer in another parameter or a caught panic, and a
-/// buffer the body had partly written is wiped.
-///
-/// `AssertUnwindSafe` is sound here. Unwind safety is about code observing, after a caught panic,
-/// state that the panicking code left half-updated. After a panic this function observes only
-/// `outputs`: their fields are never modified (`bytes` and `zero` only read them), and the bytes
-/// they point to, which may be half-written, are overwritten with zeros before the status is
-/// returned. Everything else the body used is either its own locals, dropped during unwinding
-/// (zeroizing types wipe themselves then), or caller memory it only reads. The body is not run
-/// again. A later body that captures shared state across calls, such as a key store behind a
-/// mutex, must keep that state consistent at every point where it can panic; this argument does
-/// not cover it.
-fn barrier<const N: usize>(
-    mut outputs: [Output; N],
-    body: impl FnOnce(&mut [Output; N]) -> Result<(), Error>,
+/// `outputs` are all output parameters of the call, of one kind (byte buffers, or one struct
+/// output). On any status other than `EKI_OK` each of them is zero-filled by
+/// `OutputParam::zero`, after the body has returned or unwound, so the rule also holds when the
+/// failure was a NULL pointer in another parameter or a caught panic, and an output the body had
+/// partly written is wiped. A panic becomes `EKI_ERR_INTERNAL` through `contain_panic`.
+fn barrier<O: OutputParam, const N: usize>(
+    mut outputs: [O; N],
+    body: impl FnOnce(&mut [O; N]) -> Result<(), Error>,
 ) -> eki_status {
-    let status = match catch_unwind(AssertUnwindSafe(|| body(&mut outputs))) {
-        Ok(Ok(())) => return eki_status::EKI_OK,
-        Ok(Err(error)) => eki_status::from(error),
-        Err(payload) => {
-            drop_panic_payload(payload);
-            eki_status::EKI_ERR_INTERNAL
+    let status = contain_panic(eki_status::EKI_ERR_INTERNAL, || {
+        body(&mut outputs).map_or_else(eki_status::from, |()| eki_status::EKI_OK)
+    });
+    if status != eki_status::EKI_OK {
+        for output in &mut outputs {
+            output.zero();
         }
-    };
-    for output in &mut outputs {
-        output.zero();
     }
     status
+}
+
+/// Runs `body` and returns its result, or `on_panic` if it panics. Nothing unwinds out of this
+/// function: the payload of a caught panic is disposed of by `drop_panic_payload`. `barrier` is
+/// built on it; the two functions that return no status use it directly.
+///
+/// `AssertUnwindSafe` is sound here. Unwind safety is about code observing, after a caught panic,
+/// state that the panicking code left half-updated. After a panic, the callers observe only their
+/// output parameters: the wrappers' fields are never modified (`bytes`, `write` and `zero` only
+/// read them), and the memory they point to, which may be half-written, is overwritten (with
+/// zeros by `barrier`, with `""` by `eki_ks_last_error_message`) before the function returns.
+/// Everything else a body uses is its own locals, dropped during unwinding (zeroizing types wipe
+/// themselves then), caller memory it only reads, or a key store reached through a handle. The
+/// store is shared across calls and outlives the panic: it is covered by the argument at
+/// `keystore::Handle::lock`, which shows that every point where a store operation can panic
+/// leaves the store consistent, so recovering its poisoned lock is sound. The body is not run
+/// again.
+fn contain_panic<T>(on_panic: T, body: impl FnOnce() -> T) -> T {
+    match catch_unwind(AssertUnwindSafe(body)) {
+        Ok(value) => value,
+        Err(payload) => {
+            drop_panic_payload(payload);
+            on_panic
+        }
+    }
 }
 
 /// Disposes of the payload of a caught panic without letting a second panic escape.
@@ -334,6 +382,230 @@ fn drop_panic_payload(mut payload: Box<dyn Any + Send>) {
         }
     }
     core::mem::forget(payload);
+}
+
+// --- Key store helpers ---------------------------------------------------------------------------
+
+/// Number of label bytes the library may read: the 64 of the longest label and its NUL.
+/// cbindgen:ignore
+const LABEL_SCAN_LEN: usize = EKI_LABEL_MAX_LEN + 1;
+
+/// A key store handle parameter: `eki_ks *`, or `const eki_ks *` for `eki_ks_last_error_message`.
+///
+/// Holding one dereferences nothing. `get` turns it into a shared reference to the [`Handle`] the
+/// pointer really points to, only after the NULL check.
+struct HandleIn {
+    ptr: *const eki_ks,
+}
+
+impl HandleIn {
+    /// Wraps the handle pointer `ptr`.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` is NULL, or a pointer `eki_ks_open` returned that has not been passed to
+    /// `eki_ks_close`, and `eki_ks_close` is not called on it, for as long as the returned value
+    /// exists.
+    unsafe fn new(ptr: *const eki_ks) -> Self {
+        Self { ptr }
+    }
+
+    /// The handle, borrowed for no longer than `self`. NULL is `Error::NullPointer`.
+    fn get(&self) -> Result<&Handle, Error> {
+        if self.ptr.is_null() {
+            return Err(Error::NullPointer);
+        }
+        // SAFETY: `ptr` is non-NULL (checked above), so by the precondition of `HandleIn::new`
+        // (from C5) it is the pointer `eki_ks_open` made with `Box::into_raw` from a
+        // `Box<Handle>` (cast to `eki_ks`), which is non-dangling and aligned for `Handle`, and
+        // the box has not been freed. `eki_ks_close` is the only code that frees it or creates a
+        // unique reference to it, and by C5 it does not run during this call. Every other access
+        // is through a shared reference like this one, and `Handle`'s mutable state is behind its
+        // mutex, so shared references from several threads at once are sound (`Handle` is
+        // `Sync`). The reference borrows `self`, a local of the extern call, so it ends before the
+        // call returns.
+        Ok(unsafe { &*self.ptr.cast::<Handle>() })
+    }
+
+    /// Step 1 for `ks`, then the start of a store operation: the NULL check, then the handle's
+    /// lock, which also resets the last-error message (`Handle::begin`). The guard keeps the
+    /// handle locked until the body ends.
+    fn begin(&self) -> Result<MutexGuard<'_, Store>, Error> {
+        Ok(self.get()?.begin())
+    }
+}
+
+impl PointerParam for HandleIn {
+    fn non_null(&self) -> Result<(), Error> {
+        pair_non_null(self.ptr.is_null(), 1)
+    }
+}
+
+/// A pointer to one C value the call reads: `const eki_key_id *` or `const eki_ks_config *`.
+///
+/// Holding one dereferences nothing; `read` copies the value out after the NULL check, so the
+/// body works on its own copy.
+struct StructIn<T: Copy> {
+    ptr: *const T,
+}
+
+impl<T: Copy> StructIn<T> {
+    /// Wraps the input pointer `ptr`.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` is NULL, or aligned for `T` and valid for reads of one initialised `T` within one
+    /// allocation that nothing writes, for as long as the returned value exists.
+    unsafe fn new(ptr: *const T) -> Self {
+        Self { ptr }
+    }
+
+    /// A copy of the value. NULL is `Error::NullPointer`.
+    fn read(&self) -> Result<T, Error> {
+        self.non_null()?;
+        // SAFETY: `ptr` is non-NULL (`non_null` above), so by the precondition of
+        // `StructIn::new` (from C4, C1 and C2) it is aligned and valid for reads of one
+        // initialised `T` with no concurrent writer. The read is a typed copy of a `Copy` value:
+        // struct padding is not read as bytes.
+        Ok(unsafe { self.ptr.read() })
+    }
+}
+
+impl<T: Copy> PointerParam for StructIn<T> {
+    fn non_null(&self) -> Result<(), Error> {
+        pair_non_null(self.ptr.is_null(), 1)
+    }
+}
+
+/// A C type whose all-zero byte pattern is a valid value, so an output of it can be zero-filled
+/// over its whole size, padding included ("outputs on error").
+///
+/// # Safety
+///
+/// Every byte of the type may be zero at once and the result is a valid value of the type.
+unsafe trait ZeroFill: Copy {}
+
+// SAFETY: `eki_key_id` is `#[repr(C)]` around `[u8; 16]`, and zero is a valid `u8`.
+unsafe impl ZeroFill for eki_key_id {}
+
+// SAFETY: `eki_key_info` is `#[repr(C)]` with an `i32` newtype and a `[c_char; 65]`, both valid
+// at zero (the selector value 0, an empty label); its padding bytes have no validity requirement.
+unsafe impl ZeroFill for eki_key_info {}
+
+// SAFETY: an all-zero raw pointer is the null pointer: `core::ptr::null_mut` is documented as
+// equivalent to zero-initialising the pointer. That is the `*out == NULL` that `eki_ks_open`
+// leaves on failure.
+unsafe impl ZeroFill for *mut eki_ks {}
+
+/// A pointer to one C value the call writes: `eki_key_id *`, `eki_key_info *` or `eki_ks **`.
+///
+/// `barrier` owns it and zero-fills it when the call fails. On success the body writes one whole
+/// value with `write`, a typed write that leaves struct padding unspecified, as the contract
+/// allows.
+struct StructOut<T: ZeroFill> {
+    ptr: *mut T,
+}
+
+impl<T: ZeroFill> StructOut<T> {
+    /// Wraps the output pointer `ptr`.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` is NULL, or aligned for `T` and valid for writes of `size_of::<T>()` bytes within
+    /// one allocation that nothing else reads or writes, for as long as the returned value
+    /// exists.
+    unsafe fn new(ptr: *mut T) -> Self {
+        Self { ptr }
+    }
+
+    /// Writes `value` to the output. NULL is `Error::NullPointer`.
+    fn write(&mut self, value: T) -> Result<(), Error> {
+        self.non_null()?;
+        // SAFETY: `ptr` is non-NULL (`non_null` above), so by the precondition of
+        // `StructOut::new` (from C4, C1 and C2) it is aligned and valid for writes of one `T`
+        // that nothing else accesses. `T: Copy`, so overwriting the old bytes drops nothing.
+        unsafe { self.ptr.write(value) };
+        Ok(())
+    }
+}
+
+impl StructOut<*mut eki_ks> {
+    /// Hands `handle` to the caller in `*out`. The box becomes a raw pointer only after the NULL
+    /// check, so a failure here drops the handle instead of leaking it; on success the caller
+    /// owns it until `eki_ks_close`.
+    fn put_handle(&mut self, handle: Box<Handle>) -> Result<(), Error> {
+        self.non_null()?;
+        self.write(Box::into_raw(handle).cast())
+    }
+}
+
+impl<T: ZeroFill> PointerParam for StructOut<T> {
+    fn non_null(&self) -> Result<(), Error> {
+        pair_non_null(self.ptr.is_null(), 1)
+    }
+}
+
+impl<T: ZeroFill> OutputParam for StructOut<T> {
+    /// Zero-fills all `size_of::<T>()` bytes of a non-NULL output, padding included.
+    fn zero(&mut self) {
+        if self.ptr.is_null() {
+            return;
+        }
+        // SAFETY: `ptr` is non-NULL (checked above), so by the precondition of `StructOut::new`
+        // (from C4, C1 and C2) it is aligned and valid for writes of one `T` that nothing else
+        // accesses; `write_bytes` with a count of 1 writes exactly `size_of::<T>()` bytes. The
+        // bytes are written, never read, and `T: ZeroFill` makes the all-zero result a valid `T`.
+        unsafe { self.ptr.write_bytes(0, 1) };
+    }
+}
+
+/// A label parameter: a NUL-terminated C string of which at most 65 bytes are read.
+struct LabelIn {
+    ptr: *const c_char,
+}
+
+impl LabelIn {
+    /// Wraps the label pointer `ptr`.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` is NULL, or points to a NUL-terminated string or to at least 65 readable bytes, all
+    /// in one allocation that nothing writes, for as long as the returned value exists.
+    unsafe fn new(ptr: *const c_char) -> Self {
+        Self { ptr }
+    }
+
+    /// The bytes before the label's NUL, read with a bounded scan that never reads more than 65
+    /// bytes, as the contract requires. When none of the first 65 bytes is NUL the result is
+    /// those 65 bytes, which `keystore::Label::parse` rejects, since a label has at most 64.
+    /// NULL is `Error::NullPointer`. `CStr::from_ptr` is not used because it scans without a
+    /// bound.
+    fn bytes(&self) -> Result<&[u8], Error> {
+        self.non_null()?;
+        let start = self.ptr.cast::<u8>();
+        let mut len = 0;
+        while len < LABEL_SCAN_LEN {
+            // SAFETY: `start` is non-NULL (`non_null` above). Bytes `0..len` were read and none is
+            // NUL, and `len < 65`, so by the precondition of `LabelIn::new` (from C6) byte `len`
+            // is readable and in the same allocation: the string's NUL is at `len` or later, or
+            // the buffer has 65 readable bytes. Nothing writes it (C2), and `u8` has alignment 1.
+            if unsafe { start.add(len).read() } == 0 {
+                break;
+            }
+            len += 1;
+        }
+        // SAFETY: each of the `len <= 65` bytes from `start` was read in the loop above, so they
+        // are readable and in one allocation (C6), with no concurrent writer (C2); `start` is
+        // non-NULL and `u8` has alignment 1. The slice borrows `self`, a local of the extern
+        // call, so it ends before the call returns.
+        Ok(unsafe { core::slice::from_raw_parts(start, len) })
+    }
+}
+
+impl PointerParam for LabelIn {
+    fn non_null(&self) -> Result<(), Error> {
+        pair_non_null(self.ptr.is_null(), 1)
+    }
 }
 
 /// Returns the ABI version this library implements (`EKI_ABI_VERSION`).
@@ -411,7 +683,7 @@ pub unsafe extern "C" fn eki_hmac_sha256_verify(
             Input::new(tag, tag_len, NO_MAX),
         )
     };
-    barrier([], |[]| {
+    barrier(NO_OUTPUTS, |[]| {
         check_null(&[&key, &msg, &tag])?;
         hmac::hmac_sha256_verify(key.bytes()?, msg.bytes()?, tag.bytes()?)
     })
@@ -563,7 +835,7 @@ pub unsafe extern "C" fn eki_ecdsa_p256_verify(
             Input::fixed::<EKI_P256_SIGNATURE_LEN>(sig),
         )
     };
-    barrier([], |[]| {
+    barrier(NO_OUTPUTS, |[]| {
         check_null(&[&public_key, &msg, &sig])?;
         ecdsa::p256_verify(public_key.bytes()?, msg.bytes()?, sig.bytes()?)
     })
@@ -576,12 +848,34 @@ pub unsafe extern "C" fn eki_ks_open(
     config: *const eki_ks_config,
     out: *mut *mut eki_ks,
 ) -> eki_status {
-    eki_status::EKI_ERR_UNSUPPORTED
+    // SAFETY: the C caller guarantees C4 (with C1 and C2) for `config`, one `eki_ks_config`, and
+    // for `out`, one `eki_ks *`, which are the preconditions of `StructIn::new` and
+    // `StructOut::new`. The wrappers are locals of this call, so they do not outlive that
+    // guarantee.
+    let (config, out) = unsafe { (StructIn::new(config), StructOut::new(out)) };
+    barrier([out], |[out]| {
+        check_null(&[&config, out])?;
+        let handle = keystore::open(config.read()?.backend)?;
+        out.put_handle(Box::new(handle))
+    })
 }
 
 /// Closes the store and frees the handle. Passing NULL is allowed.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn eki_ks_close(ks: *mut eki_ks) {}
+pub unsafe extern "C" fn eki_ks_close(ks: *mut eki_ks) {
+    if ks.is_null() {
+        return;
+    }
+    // SAFETY: by C5 a non-NULL `ks` is the pointer `eki_ks_open` made with `Box::into_raw` from a
+    // `Box<Handle>`, not yet closed, and no other call on it runs now or later. Taking the box
+    // back is therefore the single release of that allocation, with the type it was made with,
+    // and no reference to the handle outlives it.
+    let handle = unsafe { Box::from_raw(ks.cast::<Handle>()) };
+    // Dropping the handle drops the backend and every key with it, wiping the key material. No
+    // drop on that path is expected to panic, but a backend's drop may call into other code, and
+    // a panic must not unwind into C.
+    contain_panic((), move || drop(handle));
+}
 
 /// Copies the most recent error message of the handle into `buf` with snprintf semantics and
 /// returns its full length, excluding the NUL.
@@ -591,7 +885,28 @@ pub unsafe extern "C" fn eki_ks_last_error_message(
     buf: *mut c_char,
     buf_len: usize,
 ) -> usize {
-    0
+    // `buf == NULL` is treated as `buf_len == 0` (plan 4.2, "Last error").
+    let buf_len = if buf.is_null() { 0 } else { buf_len };
+    // SAFETY: the C caller guarantees C5 for `ks` and C1 to C3 for `buf`/`buf_len` (no maximum),
+    // which are the preconditions of `HandleIn::new` and `Output::new`; a NULL `buf` comes with
+    // length 0, which requires nothing of the pointer. The wrappers are locals of this call, so
+    // they do not outlive that guarantee.
+    let (ks, mut buf) = unsafe { (HandleIn::new(ks), Output::new(buf.cast(), buf_len, NO_MAX)) };
+    let copied = contain_panic(None, || {
+        let out = buf.bytes().ok()?;
+        // Reading the message does not start an operation, so it is not reset.
+        let length = match ks.get() {
+            Ok(handle) => keystore::copy_message(handle.lock().last_error().as_bytes(), out),
+            Err(_) => keystore::copy_message(b"", out),
+        };
+        Some(length)
+    });
+    // After a panic (or a buffer error, which the NULL rule above rules out), the answer is that
+    // of an empty message: `""` if there is room, and 0.
+    copied.unwrap_or_else(|| {
+        buf.bytes()
+            .map_or(0, |out| keystore::copy_message(b"", out))
+    })
 }
 
 /// Generates a key of algorithm `alg` with a label of 1 to 64 printable bytes and returns its
@@ -603,7 +918,23 @@ pub unsafe extern "C" fn eki_ks_generate(
     label: *const c_char,
     id_out: *mut eki_key_id,
 ) -> eki_status {
-    eki_status::EKI_ERR_UNSUPPORTED
+    // SAFETY: the C caller guarantees C5 for `ks`, C6 for `label` and C4 for `id_out`, one
+    // `eki_key_id`, which are the preconditions of `HandleIn::new`, `LabelIn::new` and
+    // `StructOut::new`. The wrappers are locals of this call, so they do not outlive that
+    // guarantee.
+    let (ks, label, id_out) = unsafe {
+        (
+            HandleIn::new(ks.cast_const()),
+            LabelIn::new(label),
+            StructOut::new(id_out),
+        )
+    };
+    barrier([id_out], |[id_out]| {
+        let mut store = ks.begin()?;
+        check_null(&[&label, id_out])?;
+        let id = store.generate(alg, label.bytes()?)?;
+        id_out.write(id.into())
+    })
 }
 
 /// Reports the algorithm and label of the key with the given id.
@@ -613,7 +944,23 @@ pub unsafe extern "C" fn eki_ks_get_info(
     id: *const eki_key_id,
     info_out: *mut eki_key_info,
 ) -> eki_status {
-    eki_status::EKI_ERR_UNSUPPORTED
+    // SAFETY: the C caller guarantees C5 for `ks` and C4 for `id`, one `eki_key_id`, and for
+    // `info_out`, one `eki_key_info`, which are the preconditions of `HandleIn::new`,
+    // `StructIn::new` and `StructOut::new`. The wrappers are locals of this call, so they do not
+    // outlive that guarantee.
+    let (ks, id, info_out) = unsafe {
+        (
+            HandleIn::new(ks.cast_const()),
+            StructIn::new(id),
+            StructOut::new(info_out),
+        )
+    };
+    barrier([info_out], |[info_out]| {
+        let mut store = ks.begin()?;
+        check_null(&[&id, info_out])?;
+        let info = store.get_info(&KeyId::from(id.read()?))?;
+        info_out.write(info.to_abi())
+    })
 }
 
 /// Writes the 65-byte SEC1 uncompressed public key of an ECDSA P-256 key to `out`.
@@ -623,7 +970,24 @@ pub unsafe extern "C" fn eki_ks_get_public_key(
     id: *const eki_key_id,
     out: *mut u8,
 ) -> eki_status {
-    eki_status::EKI_ERR_UNSUPPORTED
+    // SAFETY: the C caller guarantees C5 for `ks`, C4 for `id` and C1 to C3 for the 65-byte
+    // `out`, which are the preconditions of `HandleIn::new`, `StructIn::new` and
+    // `Output::fixed`. The wrappers are locals of this call, so they do not outlive that
+    // guarantee.
+    let (ks, id, out) = unsafe {
+        (
+            HandleIn::new(ks.cast_const()),
+            StructIn::new(id),
+            Output::fixed::<EKI_P256_PUBLIC_KEY_LEN>(out),
+        )
+    };
+    barrier([out], |[out]| {
+        let mut store = ks.begin()?;
+        check_null(&[&id, out])?;
+        let public_key = store.public_key(&KeyId::from(id.read()?))?;
+        out.bytes()?.copy_from_slice(&public_key);
+        Ok(())
+    })
 }
 
 /// Signs SHA-256 of `msg` with an ECDSA P-256 key and writes the 64-byte `r || s` signature to
@@ -636,7 +1000,25 @@ pub unsafe extern "C" fn eki_ks_sign(
     msg_len: usize,
     sig_out: *mut u8,
 ) -> eki_status {
-    eki_status::EKI_ERR_UNSUPPORTED
+    // SAFETY: the C caller guarantees C5 for `ks`, C4 for `id`, and C1 to C3 for `msg`/`msg_len`
+    // (no maximum) and the 64-byte `sig_out`, which are the preconditions of `HandleIn::new`,
+    // `StructIn::new`, `Input::new` and `Output::fixed`. The wrappers are locals of this call,
+    // so they do not outlive that guarantee.
+    let (ks, id, msg, sig_out) = unsafe {
+        (
+            HandleIn::new(ks.cast_const()),
+            StructIn::new(id),
+            Input::new(msg, msg_len, NO_MAX),
+            Output::fixed::<EKI_P256_SIGNATURE_LEN>(sig_out),
+        )
+    };
+    barrier([sig_out], |[sig_out]| {
+        let mut store = ks.begin()?;
+        check_null(&[&id, &msg, sig_out])?;
+        let signature = store.sign(&KeyId::from(id.read()?), msg.bytes()?)?;
+        sig_out.bytes()?.copy_from_slice(&signature);
+        Ok(())
+    })
 }
 
 /// Computes HMAC-SHA256 of `msg` under a stored HMAC key and writes the 32-byte tag to `out`.
@@ -648,7 +1030,25 @@ pub unsafe extern "C" fn eki_ks_hmac_sha256(
     msg_len: usize,
     out: *mut u8,
 ) -> eki_status {
-    eki_status::EKI_ERR_UNSUPPORTED
+    // SAFETY: the C caller guarantees C5 for `ks`, C4 for `id`, and C1 to C3 for `msg`/`msg_len`
+    // (no maximum) and the 32-byte `out`, which are the preconditions of `HandleIn::new`,
+    // `StructIn::new`, `Input::new` and `Output::fixed`. The wrappers are locals of this call,
+    // so they do not outlive that guarantee.
+    let (ks, id, msg, out) = unsafe {
+        (
+            HandleIn::new(ks.cast_const()),
+            StructIn::new(id),
+            Input::new(msg, msg_len, NO_MAX),
+            Output::fixed::<EKI_HMAC_SHA256_LEN>(out),
+        )
+    };
+    barrier([out], |[out]| {
+        let mut store = ks.begin()?;
+        check_null(&[&id, &msg, out])?;
+        let tag = store.hmac_sha256(&KeyId::from(id.read()?), msg.bytes()?)?;
+        out.bytes()?.copy_from_slice(&tag);
+        Ok(())
+    })
 }
 
 /// Wraps the AES or HMAC key `key_id` under the AES key `kek_id` (RFC 3394) and writes the
@@ -660,7 +1060,25 @@ pub unsafe extern "C" fn eki_ks_wrap(
     key_id: *const eki_key_id,
     out: *mut u8,
 ) -> eki_status {
-    eki_status::EKI_ERR_UNSUPPORTED
+    // SAFETY: the C caller guarantees C5 for `ks`, C4 for `kek_id` and `key_id`, and C1 to C3
+    // for the 40-byte `out`, which are the preconditions of `HandleIn::new`, `StructIn::new` and
+    // `Output::fixed`. The wrappers are locals of this call, so they do not outlive that
+    // guarantee.
+    let (ks, kek_id, key_id, out) = unsafe {
+        (
+            HandleIn::new(ks.cast_const()),
+            StructIn::new(kek_id),
+            StructIn::new(key_id),
+            Output::fixed::<EKI_WRAPPED_KEY_LEN>(out),
+        )
+    };
+    barrier([out], |[out]| {
+        let mut store = ks.begin()?;
+        check_null(&[&kek_id, &key_id, out])?;
+        let blob = store.wrap(&KeyId::from(kek_id.read()?), &KeyId::from(key_id.read()?))?;
+        out.bytes()?.copy_from_slice(&blob);
+        Ok(())
+    })
 }
 
 /// Unwraps the 40-byte `blob` under the AES key `kek_id` and stores the result as a new key with
@@ -675,13 +1093,45 @@ pub unsafe extern "C" fn eki_ks_unwrap(
     label: *const c_char,
     id: *const eki_key_id,
 ) -> eki_status {
-    eki_status::EKI_ERR_UNSUPPORTED
+    // SAFETY: the C caller guarantees C5 for `ks`, C4 for `kek_id` and `id`, C1 and C2 for
+    // `blob`/`blob_len` (no maximum: a length other than 40 is a format error found by the store
+    // logic, not a cap) and C6 for `label`, which are the preconditions of `HandleIn::new`,
+    // `StructIn::new`, `Input::new` and `LabelIn::new`. The wrappers are locals of this call, so
+    // they do not outlive that guarantee.
+    let (ks, kek_id, blob, label, id) = unsafe {
+        (
+            HandleIn::new(ks.cast_const()),
+            StructIn::new(kek_id),
+            Input::new(blob, blob_len, NO_MAX),
+            LabelIn::new(label),
+            StructIn::new(id),
+        )
+    };
+    barrier(NO_OUTPUTS, |[]| {
+        let mut store = ks.begin()?;
+        check_null(&[&kek_id, &blob, &label, &id])?;
+        store.unwrap(
+            &KeyId::from(kek_id.read()?),
+            blob.bytes()?,
+            alg,
+            label.bytes()?,
+            &KeyId::from(id.read()?),
+        )
+    })
 }
 
 /// Destroys the key with the given id, including both halves of a key pair.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn eki_ks_destroy(ks: *mut eki_ks, id: *const eki_key_id) -> eki_status {
-    eki_status::EKI_ERR_UNSUPPORTED
+    // SAFETY: the C caller guarantees C5 for `ks` and C4 for `id`, which are the preconditions of
+    // `HandleIn::new` and `StructIn::new`. The wrappers are locals of this call, so they do not
+    // outlive that guarantee.
+    let (ks, id) = unsafe { (HandleIn::new(ks.cast_const()), StructIn::new(id)) };
+    barrier(NO_OUTPUTS, |[]| {
+        let mut store = ks.begin()?;
+        check_null(&[&id])?;
+        store.destroy(&KeyId::from(id.read()?))
+    })
 }
 
 /// Generates a hybrid X25519 + ML-KEM-768 key pair. Returns `EKI_ERR_UNSUPPORTED` when the
@@ -894,7 +1344,7 @@ mod tests {
                 panic!("deliberate panic in a payload destructor");
             }
         }
-        let status = barrier([], |[]| std::panic::panic_any(PanicsOnDrop));
+        let status = barrier(NO_OUTPUTS, |[]| std::panic::panic_any(PanicsOnDrop));
         assert_eq!(status, eki_status::EKI_ERR_INTERNAL);
     }
 
@@ -921,5 +1371,238 @@ mod tests {
         assert_eq!(status, eki_status::EKI_ERR_INVALID_ARGUMENT);
         assert_eq!(fixed, [0; 4]);
         assert_eq!(var, [FILL; 4]);
+    }
+
+    // --- Key store helpers ---
+
+    /// A handle over a scripted backend, as `eki_ks_open` would hand it out; close it with
+    /// `eki_ks_close`.
+    fn scripted_handle(backend: keystore::scripted::Scripted) -> *mut eki_ks {
+        Box::into_raw(Box::new(Handle::new(Box::new(backend)))).cast()
+    }
+
+    /// The handle's last-error message, read through the extern function.
+    fn message(ks: *const eki_ks) -> String {
+        let mut buf = [FILL as c_char; 128];
+        // SAFETY: `ks` is an open handle and `buf` a live local of the length passed.
+        let len = unsafe { eki_ks_last_error_message(ks, buf.as_mut_ptr(), buf.len()) };
+        buf.iter().take(len).map(|&c| c as u8 as char).collect()
+    }
+
+    #[test]
+    fn null_handle_is_null_pointer() {
+        // SAFETY: the pointer is NULL, which the precondition allows; it is never dereferenced.
+        let ks = unsafe { HandleIn::new(core::ptr::null()) };
+        assert_eq!(check_null(&[&ks]), Err(Error::NullPointer));
+        assert!(matches!(ks.get(), Err(Error::NullPointer)));
+        assert!(matches!(ks.begin(), Err(Error::NullPointer)));
+    }
+
+    #[test]
+    fn handle_pointer_reaches_the_handle() {
+        let raw = scripted_handle(keystore::scripted::Scripted::default());
+        {
+            // SAFETY: `raw` came from `Box::into_raw` of a `Box<Handle>` and is closed only after
+            // this block, in which `ks` lives.
+            let ks = unsafe { HandleIn::new(raw) };
+            assert_eq!(check_null(&[&ks]), Ok(()));
+            let id = ks
+                .begin()
+                .expect("non-NULL handle")
+                .generate(ekicore_abi::EKI_KEY_AES_256, b"label")
+                .expect("generate succeeds");
+            let info = ks.begin().expect("non-NULL handle").get_info(&id);
+            assert_eq!(
+                info.map(|info| info.label.as_bytes().to_vec()),
+                Ok(b"label".to_vec())
+            );
+        }
+        // SAFETY: `raw` is an open handle and nothing else uses it.
+        unsafe { eki_ks_close(raw) };
+    }
+
+    #[test]
+    fn struct_input_is_read_by_copy() {
+        let id = eki_key_id { bytes: [7; 16] };
+        // SAFETY: `id` is a live, aligned, initialised local that nothing writes meanwhile.
+        let input = unsafe { StructIn::new(&id) };
+        assert_eq!(check_null(&[&input]), Ok(()));
+        assert_eq!(input.read(), Ok(id));
+
+        // SAFETY: the pointer is NULL, which the precondition allows; it is never dereferenced.
+        let null = unsafe { StructIn::<eki_key_id>::new(core::ptr::null()) };
+        assert_eq!(check_null(&[&null]), Err(Error::NullPointer));
+        assert_eq!(null.read(), Err(Error::NullPointer));
+    }
+
+    /// Storage for an `eki_key_info` that is plain initialised bytes, so a test can inspect every
+    /// byte the library wrote, padding included, without reading padding of a typed value.
+    #[repr(C, align(4))]
+    struct InfoBytes([u8; size_of::<eki_key_info>()]);
+
+    const _: () = assert!(align_of::<InfoBytes>() >= align_of::<eki_key_info>());
+
+    #[test]
+    fn struct_output_is_zero_filled_over_its_whole_size() {
+        let mut storage = InfoBytes([FILL; size_of::<eki_key_info>()]);
+        let ptr = storage.0.as_mut_ptr().cast::<eki_key_info>();
+        // SAFETY: `storage` is a live local aligned for `eki_key_info` (assertion above) and of
+        // its size, not otherwise accessed until `barrier` returns.
+        let output = unsafe { StructOut::new(ptr) };
+        let status = barrier([output], |[output]| {
+            output.write(eki_key_info {
+                alg: ekicore_abi::EKI_KEY_HMAC_SHA256,
+                label: [b'x' as c_char; 65],
+            })?;
+            Err(Error::KeyNotFound)
+        });
+        assert_eq!(status, eki_status::EKI_ERR_KEY_NOT_FOUND);
+        assert_eq!(
+            storage.0,
+            [0; size_of::<eki_key_info>()],
+            "padding included"
+        );
+    }
+
+    #[test]
+    fn struct_output_is_written_on_success() {
+        let mut id = eki_key_id { bytes: [FILL; 16] };
+        // SAFETY: `id` is a live local, not otherwise accessed until `barrier` returns.
+        let output = unsafe { StructOut::new(&mut id) };
+        let status = barrier([output], |[output]| {
+            output.write(eki_key_id { bytes: [3; 16] })
+        });
+        assert_eq!(status, eki_status::EKI_OK);
+        assert_eq!(id.bytes, [3; 16]);
+    }
+
+    #[test]
+    fn null_struct_output_is_skipped_on_error() {
+        // SAFETY: the pointer is NULL; `zero` must skip it rather than write through it.
+        let output = unsafe { StructOut::<eki_key_id>::new(core::ptr::null_mut()) };
+        let status = barrier([output], |[output]| {
+            check_null(&[&*output])?;
+            Ok(())
+        });
+        assert_eq!(status, eki_status::EKI_ERR_NULL_POINTER);
+    }
+
+    #[test]
+    fn failed_handle_output_is_null() {
+        let mut handle: *mut eki_ks = core::ptr::dangling_mut();
+        // SAFETY: `handle` is a live local, not otherwise accessed until `barrier` returns.
+        let output = unsafe { StructOut::new(&mut handle) };
+        let status = barrier([output], |[_]| Err(Error::InvalidArgument));
+        assert_eq!(status, eki_status::EKI_ERR_INVALID_ARGUMENT);
+        assert!(handle.is_null());
+    }
+
+    #[test]
+    fn handle_put_into_null_output_is_dropped() {
+        // SAFETY: the pointer is NULL, which the precondition allows; it is never written.
+        let mut output = unsafe { StructOut::<*mut eki_ks>::new(core::ptr::null_mut()) };
+        let handle = Box::new(Handle::new(Box::new(
+            keystore::scripted::Scripted::default(),
+        )));
+        // Under Miri a leaked handle would be reported at the end of the test.
+        assert_eq!(output.put_handle(handle), Err(Error::NullPointer));
+    }
+
+    #[test]
+    fn null_label_is_null_pointer() {
+        // SAFETY: the pointer is NULL, which the precondition allows; it is never dereferenced.
+        let label = unsafe { LabelIn::new(core::ptr::null()) };
+        assert_eq!(check_null(&[&label]), Err(Error::NullPointer));
+        assert_eq!(label.bytes(), Err(Error::NullPointer));
+    }
+
+    #[test]
+    fn label_ends_at_its_first_nul() {
+        for (text, expected) in [
+            (&b"\0"[..], &b""[..]),
+            (b"abc\0", b"abc"),
+            (b"ab\0cd\0", b"ab"),
+        ] {
+            // SAFETY: `text` is a live NUL-terminated byte string that nothing writes.
+            let label = unsafe { LabelIn::new(text.as_ptr().cast()) };
+            assert_eq!(label.bytes(), Ok(expected));
+        }
+    }
+
+    #[test]
+    fn label_of_64_bytes_and_its_nul_is_read_whole() {
+        let mut text = vec![b'a'; 64];
+        text.push(0);
+        let text = text.into_boxed_slice();
+        // SAFETY: `text` is a live 65-byte allocation ending in NUL that nothing writes.
+        let label = unsafe { LabelIn::new(text.as_ptr().cast()) };
+        assert_eq!(label.bytes(), Ok(&[b'a'; 64][..]));
+    }
+
+    #[test]
+    fn unterminated_label_scan_stops_at_65_bytes() {
+        // Exactly 65 bytes with no NUL: reading byte 66 would be outside the allocation, which
+        // Miri reports.
+        let text = vec![b'x'; LABEL_SCAN_LEN].into_boxed_slice();
+        // SAFETY: `text` is a live allocation of 65 readable bytes that nothing writes.
+        let label = unsafe { LabelIn::new(text.as_ptr().cast()) };
+        let bytes = label.bytes().expect("non-NULL");
+        assert_eq!(bytes.len(), LABEL_SCAN_LEN);
+        assert_eq!(keystore::Label::parse(bytes), None, "rejected by length");
+    }
+
+    #[test]
+    fn contained_panic_gives_the_fallback() {
+        assert_eq!(contain_panic(0, || 5), 5);
+        assert_eq!(contain_panic(0, || panic!("deliberate panic")), 0);
+    }
+
+    #[test]
+    fn backend_failure_message_reaches_the_caller_and_is_reset() {
+        let ks = scripted_handle(keystore::scripted::Scripted {
+            fail_with: Some("module said no".to_owned()),
+            ..Default::default()
+        });
+        let text = c"label";
+        let mut id = eki_key_id { bytes: [FILL; 16] };
+        let aes = ekicore_abi::EKI_KEY_AES_256;
+        // SAFETY: `ks` is an open handle; `text` is NUL-terminated; `id` is a live local.
+        let status = unsafe { eki_ks_generate(ks, aes, text.as_ptr(), &mut id) };
+        assert_eq!(status, eki_status::EKI_ERR_BACKEND);
+        assert_eq!(id.bytes, [0; 16], "id_out zero-filled");
+        assert_eq!(message(ks), "module said no");
+        // A call that fails on a NULL pointer other than `ks` still starts an operation.
+        // SAFETY: `ks` is an open handle; the NULL id is the case under test.
+        let status = unsafe { eki_ks_destroy(ks, core::ptr::null()) };
+        assert_eq!(status, eki_status::EKI_ERR_NULL_POINTER);
+        assert_eq!(message(ks), "");
+        // SAFETY: `ks` is an open handle and nothing else uses it.
+        unsafe { eki_ks_close(ks) };
+    }
+
+    #[test]
+    fn panic_in_a_store_operation_is_internal_and_the_handle_recovers() {
+        let ec = keystore::KeyId([3; 16]);
+        let mut backend = keystore::scripted::Scripted {
+            panic_in_sign: true,
+            ..Default::default()
+        };
+        let label = keystore::Label::parse(b"ec").expect("valid label");
+        backend.add(keystore::KeyAlg::EcdsaP256, &label, &ec);
+        let ks = scripted_handle(backend);
+        let id = eki_key_id::from(ec);
+        let mut sig = [FILL; EKI_P256_SIGNATURE_LEN];
+        // SAFETY: `ks` is an open handle; `id` and `sig` are live locals; the message is empty.
+        let status = unsafe { eki_ks_sign(ks, &id, core::ptr::null(), 0, sig.as_mut_ptr()) };
+        assert_eq!(status, eki_status::EKI_ERR_INTERNAL);
+        assert_eq!(sig, [0; EKI_P256_SIGNATURE_LEN]);
+        let mut storage = InfoBytes([FILL; size_of::<eki_key_info>()]);
+        // SAFETY: `ks` is an open handle, its lock now poisoned; `id` is a live local; `storage`
+        // is aligned for and of the size of `eki_key_info`.
+        let status = unsafe { eki_ks_get_info(ks, &id, storage.0.as_mut_ptr().cast()) };
+        assert_eq!(status, eki_status::EKI_OK, "the poisoned lock is recovered");
+        assert_eq!(message(ks), "");
+        // SAFETY: `ks` is an open handle and nothing else uses it.
+        unsafe { eki_ks_close(ks) };
     }
 }

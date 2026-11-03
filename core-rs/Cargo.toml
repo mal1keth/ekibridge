@@ -20,7 +20,9 @@ pq = ["dep:ml-kem", "dep:x25519-dalek"]
 
 [dependencies]
 aes-gcm = { version = "=0.11.1", features = ["zeroize"] }
-aes-kw = "=0.3.1"
+# `zeroize` wipes the expanded KEK schedule when the cipher is dropped. Without it the wipe would
+# depend on `aes/zeroize` reaching this crate's `aes` through the `zeroize` feature of aes-gcm.
+aes-kw = { version = "=0.3.1", features = ["zeroize"] }
 chacha20poly1305 = { version = "=0.11.0", features = ["zeroize"] }
 cryptoki = { version = "=0.12.1", optional = true }
 ekicore-abi = { path = "../abi" }

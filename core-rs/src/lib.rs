@@ -20,5 +20,6 @@ pub mod ffi;
 pub mod hkdf;
 pub mod hmac;
 pub mod keystore;
+pub mod keywrap;
 #[cfg(feature = "pq")]
 pub mod pq;

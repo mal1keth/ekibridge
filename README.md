@@ -24,7 +24,7 @@ disabled tests are the specification the implementations are written against.
 | HKDF-SHA256 | done | done | passing | planned |
 | AEAD (AES-256-GCM, ChaCha20-Poly1305) | done | done | passing | planned |
 | ECDSA P-256 verify | done | done | passing | planned |
-| Key store, software backend | done | planned | planned | planned |
+| Key store, software backend | done | done | planned | planned |
 | Key store, PKCS#11 backend | done | planned | planned | planned |
 | Hybrid KEM (X25519 + ML-KEM-768) | planned | planned | planned | planned |
 | Interop callers | written | written | n/a | n/a |

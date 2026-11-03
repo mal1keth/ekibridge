@@ -25,7 +25,6 @@ use eki_status::{EKI_ERR_INVALID_ARGUMENT, EKI_ERR_KEY_NOT_FOUND, EKI_ERR_NULL_P
 // --- open / close -------------------------------------------------------------------------
 
 #[test]
-#[ignore = "lesson L6"]
 fn open_and_close() {
     let opened = try_open(&software_config());
     assert_eq!(opened.status, EKI_OK);
@@ -36,7 +35,6 @@ fn open_and_close() {
 }
 
 #[test]
-#[ignore = "lesson L6"]
 fn open_ignores_the_pkcs11_fields() {
     let junk = CString::new("not a module").unwrap();
     let cfg = config(EKI_KS_SOFTWARE, Some(&junk), Some(&junk), Some(&junk));
@@ -46,7 +44,6 @@ fn open_ignores_the_pkcs11_fields() {
 }
 
 #[test]
-#[ignore = "lesson L6"]
 fn open_unknown_backend_is_invalid() {
     for backend in [0, 3, 99, -1, i32::MIN, i32::MAX] {
         assert_open_fails(
@@ -57,7 +54,10 @@ fn open_unknown_backend_is_invalid() {
 }
 
 #[test]
-#[ignore = "lesson L6"]
+// The expected NULL_POINTER needs the PKCS#11 configuration-field checks of `eki_ks_open`, which
+// come with the PKCS#11 backend. Until then `eki_ks_open` answers UNSUPPORTED for EKI_KS_PKCS11
+// in every build, which this test expects only without the `pkcs11` feature, so it runs there.
+#[cfg_attr(feature = "pkcs11", ignore = "lesson L7")]
 fn open_pkcs11_with_null_module_path() {
     // NULL config field → NULL_POINTER, unless PKCS#11 is not compiled in, in which case the
     // selector check (step 2) answers first with UNSUPPORTED.
@@ -75,7 +75,6 @@ fn open_pkcs11_with_null_module_path() {
 }
 
 #[test]
-#[ignore = "lesson L6"]
 fn open_null_pointers() {
     let mut handle: *mut eki_ks = core::ptr::dangling_mut();
     // SAFETY: `config` NULL is the case under test; `handle` is a live local.
@@ -95,7 +94,6 @@ fn open_null_pointers() {
 }
 
 #[test]
-#[ignore = "lesson L6"]
 fn stores_are_independent() {
     let a = Store::software();
     let b = Store::software();
@@ -109,7 +107,6 @@ fn stores_are_independent() {
 }
 
 #[test]
-#[ignore = "lesson L6"]
 fn keys_are_gone_after_close_and_reopen() {
     let id = {
         let store = Store::software();
@@ -128,55 +125,46 @@ fn keys_are_gone_after_close_and_reopen() {
 // --- shared scenarios ---------------------------------------------------------------------
 
 #[test]
-#[ignore = "lesson L6"]
 fn lifecycle() {
     ks::lifecycle(&Store::software());
 }
 
 #[test]
-#[ignore = "lesson L6"]
 fn wrap_unwrap_round_trip() {
     ks::wrap_unwrap_round_trip(&Store::software());
 }
 
 #[test]
-#[ignore = "lesson L6"]
 fn generate_rows() {
     ks::generate_rows(&Store::software());
 }
 
 #[test]
-#[ignore = "lesson L6"]
 fn generate_null_rows() {
     ks::generate_null_rows(&Store::software());
 }
 
 #[test]
-#[ignore = "lesson L6"]
 fn lookup_rows() {
     ks::lookup_rows(&Store::software());
 }
 
 #[test]
-#[ignore = "lesson L6"]
 fn lookup_null_rows() {
     ks::lookup_null_rows(&Store::software());
 }
 
 #[test]
-#[ignore = "lesson L6"]
 fn wrap_rows() {
     ks::wrap_rows(&Store::software());
 }
 
 #[test]
-#[ignore = "lesson L6"]
 fn unwrap_rows() {
     ks::unwrap_rows(&Store::software());
 }
 
 #[test]
-#[ignore = "lesson L6"]
 fn last_error_rows() {
     ks::last_error_rows(&Store::software());
 }
@@ -184,7 +172,6 @@ fn last_error_rows() {
 // --- software-only ------------------------------------------------------------------------
 
 #[test]
-#[ignore = "lesson L6"]
 fn label_bounded_scan() {
     // A 64-byte label is the maximum; its NUL is byte 65, the last one the library may read.
     let store = Store::software();
@@ -215,7 +202,6 @@ struct Shared(*mut eki_ks);
 unsafe impl Sync for Shared {}
 
 #[test]
-#[ignore = "lesson L6"]
 fn one_handle_shared_by_threads() {
     let store = Store::software();
     let mac = store.generate(EKI_KEY_HMAC_SHA256, "eki-test shared");
@@ -260,7 +246,6 @@ proptest! {
     })]
 
     #[test]
-    #[ignore = "lesson L6"]
     fn wrap_unwrap_preserves_the_key(
         text in printable_label(),
         id_bytes in proptest::array::uniform16(any::<u8>()),
