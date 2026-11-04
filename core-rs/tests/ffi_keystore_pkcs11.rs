@@ -1,4 +1,4 @@
-//! The PKCS#11 key store through the C ABI (lesson L7).
+//! The PKCS#11 key store through the C ABI.
 //!
 //! Needs a token: `source scripts/softhsm-init.sh` exports `EKI_PKCS11_MODULE`,
 //! `EKI_PKCS11_TOKEN_LABEL` and `EKI_PKCS11_PIN`. When any of them is unset each test prints a
@@ -17,19 +17,27 @@ mod common;
 
 #[cfg(feature = "pkcs11")]
 mod with_pkcs11 {
-    use std::ffi::CString;
+    use std::ffi::{CString, OsStr};
+    use std::os::unix::ffi::OsStrExt;
     use std::sync::Mutex;
+
+    use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
+    use cryptoki::error::{Error as CkError, RvError};
+    use cryptoki::object::{Attribute, CertificateType, KeyType, ObjectClass};
+    use cryptoki::session::Session;
 
     use super::common::ks;
     use super::common::{
-        In, Store, assert_info, assert_open_fails, config, label, label_of_len, try_open,
+        In, Store, assert_info, assert_info_zero, assert_open_fails, config, label, label_of_len,
+        last_error, prefilled_info, try_open,
     };
     use ekicore_abi::eki_status::{
-        EKI_ERR_BACKEND, EKI_ERR_INVALID_ARGUMENT, EKI_ERR_KEY_NOT_FOUND, EKI_ERR_NULL_POINTER,
-        EKI_OK,
+        EKI_ERR_BACKEND, EKI_ERR_INVALID_ARGUMENT, EKI_ERR_KEY_EXISTS, EKI_ERR_KEY_NOT_FOUND,
+        EKI_ERR_NULL_POINTER, EKI_OK,
     };
     use ekicore_abi::{
-        EKI_KEY_AES_256, EKI_KEY_ECDSA_P256, EKI_KEY_HMAC_SHA256, EKI_KS_PKCS11, eki_ks_config,
+        EKI_KEY_AES_256, EKI_KEY_ECDSA_P256, EKI_KEY_HMAC_SHA256, EKI_KS_PKCS11, eki_key_id,
+        eki_ks_config,
     };
 
     /// Token parameters from the environment.
@@ -88,7 +96,6 @@ mod with_pkcs11 {
     // --- open ---------------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "lesson L7"]
     fn open_and_close() {
         with_store(|store| {
             let id = store.generate(EKI_KEY_HMAC_SHA256, "eki-test");
@@ -97,7 +104,6 @@ mod with_pkcs11 {
     }
 
     #[test]
-    #[ignore = "lesson L7"]
     fn open_wrong_pin_is_backend() {
         with_token(|token| {
             for pin in ["0000", "12345", &"9".repeat(255)] {
@@ -114,7 +120,6 @@ mod with_pkcs11 {
     }
 
     #[test]
-    #[ignore = "lesson L7"]
     fn open_unknown_token_label_is_backend() {
         with_token(|token| {
             for text in ["no-such-token", &"z".repeat(32)] {
@@ -131,7 +136,6 @@ mod with_pkcs11 {
     }
 
     #[test]
-    #[ignore = "lesson L7"]
     fn open_missing_module_is_backend() {
         with_token(|token| {
             let module = label("/nonexistent/libnot-a-pkcs11-module.so");
@@ -146,7 +150,6 @@ mod with_pkcs11 {
     }
 
     #[test]
-    #[ignore = "lesson L7"]
     fn open_null_config_fields_in_field_order() {
         with_token(|token| {
             let (m, l, p) = (Some(&token.module), Some(&token.label), Some(&token.pin));
@@ -164,7 +167,6 @@ mod with_pkcs11 {
     }
 
     #[test]
-    #[ignore = "lesson L7"]
     fn open_null_field_before_format_of_another_field() {
         // §4.2 `ks_open` lists the NULL checks of all three fields before the format checks:
         // a malformed token label together with a NULL PIN is NULL_POINTER.
@@ -176,7 +178,6 @@ mod with_pkcs11 {
     }
 
     #[test]
-    #[ignore = "lesson L7"]
     fn open_token_label_format_is_invalid() {
         with_token(|token| {
             let long = label_of_len(33);
@@ -206,7 +207,6 @@ mod with_pkcs11 {
     }
 
     #[test]
-    #[ignore = "lesson L7"]
     fn open_pin_length_is_invalid() {
         with_token(|token| {
             let empty = label("");
@@ -228,55 +228,46 @@ mod with_pkcs11 {
     // --- shared scenarios ---------------------------------------------------------------------
 
     #[test]
-    #[ignore = "lesson L7"]
     fn lifecycle() {
         with_store(ks::lifecycle);
     }
 
     #[test]
-    #[ignore = "lesson L7"]
     fn wrap_unwrap_round_trip() {
         with_store(ks::wrap_unwrap_round_trip);
     }
 
     #[test]
-    #[ignore = "lesson L7"]
     fn generate_rows() {
         with_store(ks::generate_rows);
     }
 
     #[test]
-    #[ignore = "lesson L7"]
     fn generate_null_rows() {
         with_store(ks::generate_null_rows);
     }
 
     #[test]
-    #[ignore = "lesson L7"]
     fn lookup_rows() {
         with_store(ks::lookup_rows);
     }
 
     #[test]
-    #[ignore = "lesson L7"]
     fn lookup_null_rows() {
         with_store(ks::lookup_null_rows);
     }
 
     #[test]
-    #[ignore = "lesson L7"]
     fn wrap_rows() {
         with_store(ks::wrap_rows);
     }
 
     #[test]
-    #[ignore = "lesson L7"]
     fn unwrap_rows() {
         with_store(ks::unwrap_rows);
     }
 
     #[test]
-    #[ignore = "lesson L7"]
     fn last_error_rows() {
         with_store(ks::last_error_rows);
     }
@@ -284,7 +275,6 @@ mod with_pkcs11 {
     // --- PKCS#11-specific ---------------------------------------------------------------------
 
     #[test]
-    #[ignore = "lesson L7"]
     fn empty_message_hmac_and_sign_are_ok() {
         // §4.3: SoftHSM2 rejects a NULL data pointer even with length 0; the library must
         // substitute a dummy pointer, so both NULL and non-NULL empty messages work.
@@ -311,7 +301,6 @@ mod with_pkcs11 {
     }
 
     #[test]
-    #[ignore = "lesson L7"]
     fn keys_persist_in_the_token_across_handles() {
         with_token(|token| {
             let id = {
@@ -328,7 +317,6 @@ mod with_pkcs11 {
     }
 
     #[test]
-    #[ignore = "lesson L7"]
     fn second_handle_survives_closing_the_first() {
         // §4.3 lifecycle: close never logs out and finalizes only at zero open handles.
         with_token(|token| {
@@ -352,7 +340,6 @@ mod with_pkcs11 {
     }
 
     #[test]
-    #[ignore = "lesson L7"]
     fn destroy_removes_both_halves_of_a_key_pair() {
         with_store(|store| {
             let kek = store.generate(EKI_KEY_AES_256, "eki-test kek");
@@ -369,6 +356,379 @@ mod with_pkcs11 {
             store.unwrap(&kek, &blob, EKI_KEY_HMAC_SHA256, "eki-test reused id", &ec);
             assert_info(&store.info(&ec), EKI_KEY_HMAC_SHA256, "eki-test reused id");
         });
+    }
+
+    // --- Module and session lifetime (§4.3 lifecycle) -----------------------------------------
+
+    #[test]
+    fn two_open_handles_see_each_others_changes() {
+        // Both handles share one module context and look keys up again on every call, so a key
+        // created or destroyed through one is seen at once through the other.
+        with_token(|token| {
+            let a = Store::open(&token.config());
+            let b = Store::open(&token.config());
+            let ec = a.generate(EKI_KEY_ECDSA_P256, "eki-test shared");
+            assert_info(&b.info(&ec), EKI_KEY_ECDSA_P256, "eki-test shared");
+            let sig = b.sign(&ec, In::Bytes(b"m"));
+            assert_eq!(
+                ks::verify(&a.public_key(&ec), In::Bytes(b"m"), &sig),
+                EKI_OK
+            );
+            a.forget(&ec);
+            b.destroy(&ec);
+            let mut info = prefilled_info();
+            let status = ks::get_info(a.ptr(), Some(&ec), Some(&mut info));
+            assert_eq!(status, EKI_ERR_KEY_NOT_FOUND);
+            assert_info_zero(&info);
+            // Both handles stay usable.
+            let mac = b.generate(EKI_KEY_HMAC_SHA256, "eki-test after destroy");
+            assert_eq!(a.hmac(&mac, b"m"), b.hmac(&mac, b"m"));
+        });
+    }
+
+    #[test]
+    fn open_succeeds_after_failed_opens() {
+        // A failed open releases what it acquired (session, module reference), so the module is
+        // finalised again and the next open initialises it and logs in afresh.
+        with_token(|token| {
+            let wrong_pin = label("0000");
+            let other_label = label("no-such-token");
+            let missing = label("/nonexistent/libnot-a-pkcs11-module.so");
+            let (m, l, p) = (Some(&token.module), Some(&token.label), Some(&token.pin));
+            for (module, token_label, pin) in [
+                (m, l, Some(&wrong_pin)),
+                (m, Some(&other_label), p),
+                (Some(&missing), l, p),
+                (m, l, Some(&wrong_pin)),
+            ] {
+                let cfg = config(EKI_KS_PKCS11, module, token_label, pin);
+                assert_open_fails(&cfg, EKI_ERR_BACKEND);
+            }
+            let store = Store::open(&token.config());
+            let id = store.generate(EKI_KEY_HMAC_SHA256, "eki-test after failures");
+            assert_info(
+                &store.info(&id),
+                EKI_KEY_HMAC_SHA256,
+                "eki-test after failures",
+            );
+        });
+    }
+
+    #[test]
+    fn open_with_wrong_pin_while_logged_in_succeeds() {
+        // §4.3: the login state belongs to the process; while a handle is logged in, C_Login
+        // answers CKR_USER_ALREADY_LOGGED_IN whatever the PIN, which counts as success.
+        with_token(|token| {
+            let _logged_in = Store::open(&token.config());
+            let wrong_pin = label("0000-not-the-pin");
+            let cfg = config(
+                EKI_KS_PKCS11,
+                Some(&token.module),
+                Some(&token.label),
+                Some(&wrong_pin),
+            );
+            let second = Store::open(&cfg);
+            let id = second.generate(EKI_KEY_AES_256, "eki-test second login");
+            assert_info(&second.info(&id), EKI_KEY_AES_256, "eki-test second login");
+        });
+    }
+
+    /// A shared library that exports no `C_GetFunctionList`, if one is known on this system.
+    fn library_without_pkcs11() -> Option<&'static str> {
+        if cfg!(target_os = "macos") {
+            // In the dyld shared cache rather than on disk, but `dlopen` finds it.
+            return Some("/usr/lib/libSystem.B.dylib");
+        }
+        [
+            "/lib/x86_64-linux-gnu/libm.so.6",
+            "/lib/aarch64-linux-gnu/libm.so.6",
+            "/usr/lib64/libm.so.6",
+            "/usr/lib/libm.so.6",
+        ]
+        .into_iter()
+        .find(|path| std::path::Path::new(path).exists())
+    }
+
+    #[test]
+    fn open_non_module_is_backend() {
+        with_token(|token| {
+            let mut paths = vec!["", "/dev/null"];
+            paths.extend(library_without_pkcs11());
+            for path in paths {
+                let module = label(path);
+                let cfg = config(
+                    EKI_KS_PKCS11,
+                    Some(&module),
+                    Some(&token.label),
+                    Some(&token.pin),
+                );
+                let opened = try_open(&cfg);
+                assert_eq!(opened.status, EKI_ERR_BACKEND, "module path {path:?}");
+                assert!(opened.out_is_null);
+            }
+        });
+    }
+
+    // --- Objects the library did not create (§4.3, amended) -----------------------------------
+
+    /// A cryptoki session of its own on the test token, for objects the library did not create.
+    /// It is opened while `store` is open, so the module is already initialised (this context
+    /// gets CKR_CRYPTOKI_ALREADY_INITIALIZED and never finalises) and the store's login covers
+    /// this session. The borrow of the store makes the session close before the store does.
+    struct RawToken<'s> {
+        session: Session,
+        _context: Pkcs11,
+        _store: &'s Store,
+    }
+
+    impl<'s> RawToken<'s> {
+        fn open(token: &Token, store: &'s Store) -> RawToken<'s> {
+            let path = OsStr::from_bytes(token.module.as_bytes());
+            let context = Pkcs11::new(path).expect("the test module loads");
+            match context.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)) {
+                Err(CkError::Pkcs11(RvError::CryptokiAlreadyInitialized, _)) => {}
+                other => {
+                    if other.is_ok() {
+                        let _ = context.clone().finalize();
+                    }
+                    panic!("the open store should have initialised the module: {other:?}");
+                }
+            }
+            let wanted = token.label.to_str().expect("ASCII token label");
+            let slot = context
+                .get_slots_with_token()
+                .expect("C_GetSlotList")
+                .into_iter()
+                .find(|&slot| {
+                    context
+                        .get_token_info(slot)
+                        .is_ok_and(|info| info.label() == wanted)
+                })
+                .expect("the test token is present");
+            let session = context.open_rw_session(slot).expect("C_OpenSession");
+            RawToken {
+                session,
+                _context: context,
+                _store: store,
+            }
+        }
+
+        fn create(&self, template: &[Attribute]) {
+            self.session
+                .create_object(template)
+                .expect("C_CreateObject");
+        }
+
+        /// Destroys the objects of `class` that carry `id`.
+        fn destroy(&self, id: &eki_key_id, class: ObjectClass) {
+            let search = [Attribute::Class(class), Attribute::Id(id.bytes.to_vec())];
+            let found = self.session.find_objects(&search).expect("C_FindObjects");
+            assert!(!found.is_empty(), "no object of {class:?} carries the id");
+            for object in found {
+                self.session
+                    .destroy_object(object)
+                    .expect("C_DestroyObject");
+            }
+        }
+    }
+
+    /// A random id, so that objects a failed run left behind cannot collide with this run's.
+    fn random_id() -> eki_key_id {
+        let mut id = eki_key_id { bytes: [0; 16] };
+        getrandom::fill(&mut id.bytes).expect("getrandom");
+        id
+    }
+
+    /// A token secret key of `key_type` with the value `value`, labelled `text`, carrying the
+    /// usage attributes of its row in the §4.3 table.
+    fn secret_key(id: &eki_key_id, key_type: KeyType, text: &[u8], value: &[u8]) -> Vec<Attribute> {
+        let mut template = vec![
+            Attribute::Class(ObjectClass::SECRET_KEY),
+            Attribute::KeyType(key_type),
+            Attribute::Token(true),
+            Attribute::Private(true),
+            Attribute::Id(id.bytes.to_vec()),
+            Attribute::Label(text.to_vec()),
+            Attribute::Value(value.to_vec()),
+            Attribute::Sensitive(true),
+            Attribute::Extractable(true),
+        ];
+        if key_type == KeyType::AES {
+            template.extend([
+                Attribute::Wrap(true),
+                Attribute::Unwrap(true),
+                Attribute::Encrypt(true),
+                Attribute::Decrypt(true),
+            ]);
+        } else {
+            template.extend([Attribute::Sign(true), Attribute::Verify(true)]);
+        }
+        template
+    }
+
+    /// Asserts that an operation that needs the key's algorithm or label fails as a backend
+    /// failure with a message.
+    #[track_caller]
+    fn assert_backend_failure(store: &Store, status: ekicore_abi::eki_status, what: &str) {
+        assert_eq!(status, EKI_ERR_BACKEND, "{what}");
+        assert!(!last_error(store.ptr()).is_empty(), "{what}: message");
+    }
+
+    #[test]
+    fn foreign_object_takes_the_id_and_can_be_destroyed() {
+        with_token_store(|token, store| {
+            let id = random_id();
+            {
+                let raw = RawToken::open(token, store);
+                // CKO_DATA would not do: data objects have no CKA_ID.
+                raw.create(&[
+                    Attribute::Class(ObjectClass::CERTIFICATE),
+                    Attribute::CertificateType(CertificateType::X_509),
+                    Attribute::Token(true),
+                    Attribute::Id(id.bytes.to_vec()),
+                    Attribute::Label(b"eki-test certificate".to_vec()),
+                    Attribute::Subject(b"not a DER name".to_vec()),
+                    Attribute::Value(b"not a DER certificate".to_vec()),
+                ]);
+            }
+            store.track(id);
+            let mut info = prefilled_info();
+            let status = ks::get_info(store.ptr(), Some(&id), Some(&mut info));
+            assert_backend_failure(store, status, "get_info");
+            assert_info_zero(&info);
+            let mut out = [0xA5; 32];
+            let status = ks::hmac(store.ptr(), Some(&id), In::Bytes(b"m"), Some(&mut out));
+            assert_backend_failure(store, status, "ks_hmac");
+            // It takes the id: unwrapping into it is KEY_EXISTS.
+            let kek = store.generate(EKI_KEY_AES_256, "eki-test kek");
+            let mac = store.generate(EKI_KEY_HMAC_SHA256, "eki-test hmac");
+            let blob = store.wrap(&kek, &mac);
+            let text = label("eki-test copy");
+            let status = ks::unwrap(
+                store.ptr(),
+                Some(&kek),
+                In::Bytes(&blob),
+                EKI_KEY_HMAC_SHA256,
+                text.as_ptr(),
+                Some(&id),
+            );
+            assert_eq!(status, EKI_ERR_KEY_EXISTS);
+            // It can be destroyed, once.
+            store.destroy(&id);
+            let status = ks::get_info(store.ptr(), Some(&id), Some(&mut prefilled_info()));
+            assert_eq!(status, EKI_ERR_KEY_NOT_FOUND);
+            assert_eq!(ks::destroy(store.ptr(), Some(&id)), EKI_ERR_KEY_NOT_FOUND);
+        });
+    }
+
+    #[test]
+    fn wrap_checks_existence_before_describing_a_foreign_kek() {
+        // §4.2 `ks_wrap`: kek exists → key exists → kek is AES_256. A foreign kek is a backend
+        // failure only once both ids are known to exist.
+        with_token_store(|token, store| {
+            let foreign = random_id();
+            {
+                let raw = RawToken::open(token, store);
+                raw.create(&secret_key(&foreign, KeyType::AES, b"", &[0x33; 32]));
+            }
+            store.track(foreign);
+            let mut out = [0xA5; 40];
+            let missing = random_id();
+            let status = ks::wrap(store.ptr(), Some(&foreign), Some(&missing), Some(&mut out));
+            assert_eq!(status, EKI_ERR_KEY_NOT_FOUND);
+            assert_eq!(out, [0; 40]);
+            let mac = store.generate(EKI_KEY_HMAC_SHA256, "eki-test hmac");
+            let status = ks::wrap(store.ptr(), Some(&foreign), Some(&mac), Some(&mut out));
+            assert_backend_failure(store, status, "ks_wrap under a foreign kek");
+        });
+    }
+
+    #[test]
+    fn secret_key_with_an_invalid_label_is_foreign() {
+        with_token_store(|token, store| {
+            let long = [b'L'; 65];
+            for text in [&b""[..], &long, b"eki\x01test", b"eki\x80test"] {
+                let id = random_id();
+                {
+                    let raw = RawToken::open(token, store);
+                    raw.create(&secret_key(&id, KeyType::GENERIC_SECRET, text, &[0x44; 32]));
+                }
+                store.track(id);
+                let mut info = prefilled_info();
+                let status = ks::get_info(store.ptr(), Some(&id), Some(&mut info));
+                assert_backend_failure(store, status, "get_info");
+                let mut out = [0xA5; 32];
+                let status = ks::hmac(store.ptr(), Some(&id), In::Bytes(b"m"), Some(&mut out));
+                assert_backend_failure(store, status, "ks_hmac");
+                store.destroy(&id);
+            }
+        });
+    }
+
+    #[test]
+    fn key_pair_without_its_public_half_is_foreign() {
+        with_token_store(|token, store| {
+            let ec = store.generate(EKI_KEY_ECDSA_P256, "eki-test half");
+            RawToken::open(token, store).destroy(&ec, ObjectClass::PUBLIC_KEY);
+            let mut info = prefilled_info();
+            let status = ks::get_info(store.ptr(), Some(&ec), Some(&mut info));
+            assert_backend_failure(store, status, "get_info");
+            let mut sig = [0xA5; 64];
+            let status = ks::sign(store.ptr(), Some(&ec), In::Bytes(b"m"), Some(&mut sig));
+            assert_backend_failure(store, status, "ks_sign");
+            let mut pk = [0xA5; 65];
+            let status = ks::get_public_key(store.ptr(), Some(&ec), Some(&mut pk));
+            assert_backend_failure(store, status, "get_public_key");
+            // Destroy removes the private half that is left.
+            store.destroy(&ec);
+            let status = ks::get_info(store.ptr(), Some(&ec), Some(&mut prefilled_info()));
+            assert_eq!(status, EKI_ERR_KEY_NOT_FOUND);
+        });
+    }
+
+    #[test]
+    fn secret_keys_created_elsewhere_are_usable() {
+        // Keys of the plan's shape made by another program: recognised with their algorithm and
+        // label, and the token's CKM_SHA256_HMAC and CKM_AES_KEY_WRAP agree with the library's
+        // own HMAC and RFC 3394 code over the same key bytes.
+        with_token_store(|token, store| {
+            let (kek, mac) = (random_id(), random_id());
+            let (kek_value, mac_value) = ([0x11; 32], [0x22; 32]);
+            {
+                let raw = RawToken::open(token, store);
+                raw.create(&secret_key(
+                    &kek,
+                    KeyType::AES,
+                    b"eki-test raw aes",
+                    &kek_value,
+                ));
+                raw.create(&secret_key(
+                    &mac,
+                    KeyType::GENERIC_SECRET,
+                    b"eki-test raw hmac",
+                    &mac_value,
+                ));
+            }
+            store.track(kek);
+            store.track(mac);
+            assert_info(&store.info(&kek), EKI_KEY_AES_256, "eki-test raw aes");
+            assert_info(&store.info(&mac), EKI_KEY_HMAC_SHA256, "eki-test raw hmac");
+            let expected = ekicore_rs::hmac::hmac_sha256(&mac_value, b"message").expect("HMAC");
+            assert_eq!(store.hmac(&mac, b"message"), expected);
+            assert_eq!(
+                store.wrap(&kek, &mac),
+                ekicore_rs::keywrap::wrap(&kek_value, &mac_value)
+            );
+            assert_eq!(
+                store.wrap(&kek, &kek),
+                ekicore_rs::keywrap::wrap(&kek_value, &kek_value)
+            );
+        });
+    }
+
+    /// Runs `f` with the token parameters and a freshly opened store of the test token.
+    fn with_token_store(f: impl FnOnce(&Token, &Store)) {
+        with_token(|token| f(token, &Store::open(&token.config())));
     }
 }
 

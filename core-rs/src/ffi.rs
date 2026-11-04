@@ -9,8 +9,9 @@
 //!
 //! Every function is implemented except the three hybrid KEM functions, which are stubs that
 //! return `EKI_ERR_UNSUPPORTED` without looking at any argument. The key store functions serve
-//! the software backend; `eki_ks_open` answers `EKI_ERR_UNSUPPORTED` for `EKI_KS_PKCS11` until
-//! that backend exists.
+//! the software backend and, with the `pkcs11` feature (on by default), the PKCS#11 backend;
+//! without the feature `eki_ks_open` answers `EKI_ERR_UNSUPPORTED` for `EKI_KS_PKCS11` before it
+//! looks at any configuration field.
 //!
 //! # Caller contract
 //!
@@ -33,15 +34,22 @@
 //! - **C4, structs.** A non-NULL pointer to a struct or pointer parameter (`const eki_key_id *`,
 //!   `eki_key_id *`, `eki_key_info *`, `const eki_ks_config *`, `eki_ks **`) is aligned for its
 //!   type and valid, by C1 and C2, for one value of it: its `sizeof` bytes in one live
-//!   allocation, holding an initialised value for an input. Only `eki_ks_config`'s `backend`
-//!   field is used; its string fields are never read by the software backend.
+//!   allocation, holding an initialised value for an input. The string fields of an
+//!   `eki_ks_config` are dereferenced only when its `backend` is `EKI_KS_PKCS11` and the library
+//!   has the PKCS#11 backend; otherwise they may hold any value.
 //! - **C5, handles.** A non-NULL `eki_ks *` is a value `eki_ks_open` returned that has not been
 //!   passed to `eki_ks_close`. Any number of threads may use one handle at the same time;
 //!   `eki_ks_close` does not run at the same time as any other call on that handle, and the
 //!   handle is not used after it.
-//! - **C6, labels.** A non-NULL `label` points to a NUL-terminated string, or to at least 65
-//!   readable bytes; the library reads up to the first NUL or 65 bytes, whichever comes first,
-//!   and nothing writes those bytes during the call.
+//! - **C6, bounded strings.** A non-NULL `label` points to a NUL-terminated string, or to at
+//!   least 65 readable bytes; the library reads up to the first NUL or 65 bytes, whichever comes
+//!   first, and nothing writes those bytes during the call. The same holds for the
+//!   `pkcs11_token_label` (33 bytes: the 32 of the longest label and its NUL) and the
+//!   `pkcs11_user_pin` (256 bytes) of a PKCS#11 configuration.
+//! - **C7, module path.** A non-NULL `pkcs11_module_path` of a PKCS#11 configuration points to
+//!   a NUL-terminated string that nothing writes during the call. The contract sets no maximum
+//!   length, so the library scans to the NUL without a bound; the C++ library reads the path the
+//!   same way (as a `std::string` built from the C string), so both accept the same paths.
 //!
 //! A NULL pointer with a non-zero length does not break the contract: the call reports it as
 //! `EKI_ERR_NULL_POINTER`. A pointer, NULL or not, that comes with length zero is an empty buffer
@@ -390,6 +398,16 @@ fn drop_panic_payload(mut payload: Box<dyn Any + Send>) {
 /// cbindgen:ignore
 const LABEL_SCAN_LEN: usize = EKI_LABEL_MAX_LEN + 1;
 
+/// Number of PKCS#11 token label bytes the library may read: the 32 of the longest label and
+/// its NUL.
+/// cbindgen:ignore
+const TOKEN_LABEL_SCAN_LEN: usize = keystore::PKCS11_TOKEN_LABEL_MAX_LEN + 1;
+
+/// Number of PKCS#11 user PIN bytes the library may read: the 255 of the longest PIN and its
+/// NUL.
+/// cbindgen:ignore
+const USER_PIN_SCAN_LEN: usize = keystore::PKCS11_USER_PIN_MAX_LEN + 1;
+
 /// A key store handle parameter: `eki_ks *`, or `const eki_ks *` for `eki_ks_last_error_message`.
 ///
 /// Holding one dereferences nothing. `get` turns it into a shared reference to the [`Handle`] the
@@ -559,50 +577,91 @@ impl<T: ZeroFill> OutputParam for StructOut<T> {
     }
 }
 
-/// A label parameter: a NUL-terminated C string of which at most 65 bytes are read.
-struct LabelIn {
+/// A string parameter of which at most `SCAN` bytes are read: a key label (`SCAN` 65), a
+/// PKCS#11 token label (33) or a PKCS#11 user PIN (256). `SCAN` is one more than the longest
+/// valid text, so a text with no NUL within the bound is read as `SCAN` bytes and fails its
+/// length check.
+struct TextIn<const SCAN: usize> {
     ptr: *const c_char,
 }
 
-impl LabelIn {
-    /// Wraps the label pointer `ptr`.
+/// A key label parameter: at most 65 bytes are read.
+type LabelIn = TextIn<LABEL_SCAN_LEN>;
+
+impl<const SCAN: usize> TextIn<SCAN> {
+    /// Wraps the string pointer `ptr`.
     ///
     /// # Safety
     ///
-    /// `ptr` is NULL, or points to a NUL-terminated string or to at least 65 readable bytes, all
-    /// in one allocation that nothing writes, for as long as the returned value exists.
+    /// `ptr` is NULL, or points to a NUL-terminated string or to at least `SCAN` readable bytes,
+    /// all in one allocation that nothing writes, for as long as the returned value exists.
     unsafe fn new(ptr: *const c_char) -> Self {
         Self { ptr }
     }
 
-    /// The bytes before the label's NUL, read with a bounded scan that never reads more than 65
-    /// bytes, as the contract requires. When none of the first 65 bytes is NUL the result is
-    /// those 65 bytes, which `keystore::Label::parse` rejects, since a label has at most 64.
-    /// NULL is `Error::NullPointer`. `CStr::from_ptr` is not used because it scans without a
-    /// bound.
+    /// The bytes before the string's NUL, read with a bounded scan that never reads more than
+    /// `SCAN` bytes, as the contract requires. When none of the first `SCAN` bytes is NUL the
+    /// result is those `SCAN` bytes, which the format check rejects by length (a label has at
+    /// most 64 bytes, a token label 32, a PIN 255). NULL is `Error::NullPointer`.
+    /// `CStr::from_ptr` is not used because it scans without a bound.
     fn bytes(&self) -> Result<&[u8], Error> {
         self.non_null()?;
         let start = self.ptr.cast::<u8>();
         let mut len = 0;
-        while len < LABEL_SCAN_LEN {
+        while len < SCAN {
             // SAFETY: `start` is non-NULL (`non_null` above). Bytes `0..len` were read and none is
-            // NUL, and `len < 65`, so by the precondition of `LabelIn::new` (from C6) byte `len`
+            // NUL, and `len < SCAN`, so by the precondition of `TextIn::new` (from C6) byte `len`
             // is readable and in the same allocation: the string's NUL is at `len` or later, or
-            // the buffer has 65 readable bytes. Nothing writes it (C2), and `u8` has alignment 1.
+            // the buffer has `SCAN` readable bytes. Nothing writes it (C2), and `u8` has
+            // alignment 1.
             if unsafe { start.add(len).read() } == 0 {
                 break;
             }
             len += 1;
         }
-        // SAFETY: each of the `len <= 65` bytes from `start` was read in the loop above, so they
-        // are readable and in one allocation (C6), with no concurrent writer (C2); `start` is
-        // non-NULL and `u8` has alignment 1. The slice borrows `self`, a local of the extern
+        // SAFETY: each of the `len <= SCAN` bytes from `start` was read in the loop above, so
+        // they are readable and in one allocation (C6), with no concurrent writer (C2); `start`
+        // is non-NULL and `u8` has alignment 1. The slice borrows `self`, a local of the extern
         // call, so it ends before the call returns.
         Ok(unsafe { core::slice::from_raw_parts(start, len) })
     }
 }
 
-impl PointerParam for LabelIn {
+impl<const SCAN: usize> PointerParam for TextIn<SCAN> {
+    fn non_null(&self) -> Result<(), Error> {
+        pair_non_null(self.ptr.is_null(), 1)
+    }
+}
+
+/// The PKCS#11 module path: a NUL-terminated string with no maximum length (C7).
+struct PathIn {
+    ptr: *const c_char,
+}
+
+impl PathIn {
+    /// Wraps the path pointer `ptr`.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` is NULL, or points to a NUL-terminated string in one allocation that nothing
+    /// writes, for as long as the returned value exists.
+    unsafe fn new(ptr: *const c_char) -> Self {
+        Self { ptr }
+    }
+
+    /// The bytes before the path's NUL. NULL is `Error::NullPointer`.
+    fn bytes(&self) -> Result<&[u8], Error> {
+        self.non_null()?;
+        // SAFETY: `ptr` is non-NULL (`non_null` above), so by the precondition of `PathIn::new`
+        // (from C7) it points to a NUL-terminated string in one allocation with no concurrent
+        // writer (C2), which is what `CStr::from_ptr` requires; `c_char` has alignment 1. The
+        // returned slice borrows `self`, a local of the extern call, so it ends before the call
+        // returns.
+        Ok(unsafe { CStr::from_ptr(self.ptr) }.to_bytes())
+    }
+}
+
+impl PointerParam for PathIn {
     fn non_null(&self) -> Result<(), Error> {
         pair_non_null(self.ptr.is_null(), 1)
     }
@@ -855,7 +914,32 @@ pub unsafe extern "C" fn eki_ks_open(
     let (config, out) = unsafe { (StructIn::new(config), StructOut::new(out)) };
     barrier([out], |[out]| {
         check_null(&[&config, out])?;
-        let handle = keystore::open(config.read()?.backend)?;
+        let config = config.read()?;
+        let handle = match keystore::select(config.backend)? {
+            keystore::Selected::Software => keystore::open_software(),
+            keystore::Selected::Pkcs11 => {
+                // SAFETY: the configuration selects the PKCS#11 backend and the library has it
+                // (`select` answered `Pkcs11`), so the caller guarantees C7 for the module path
+                // and C6 (33 and 256 bytes) for the token label and the PIN, the preconditions of
+                // `PathIn::new` and `TextIn::new`. The pointers are the caller's own, copied out
+                // of its `eki_ks_config` by `read`. The wrappers are locals of this call, so they
+                // do not outlive that guarantee.
+                let (module_path, token_label, user_pin) = unsafe {
+                    (
+                        PathIn::new(config.pkcs11_module_path),
+                        TextIn::<TOKEN_LABEL_SCAN_LEN>::new(config.pkcs11_token_label),
+                        TextIn::<USER_PIN_SCAN_LEN>::new(config.pkcs11_user_pin),
+                    )
+                };
+                // Step 1 for the three fields, in field order, before any format check.
+                check_null(&[&module_path, &token_label, &user_pin])?;
+                keystore::open_pkcs11(&keystore::Pkcs11Fields {
+                    module_path: module_path.bytes()?,
+                    token_label: token_label.bytes()?,
+                    user_pin: user_pin.bytes()?,
+                })?
+            }
+        };
         out.put_handle(Box::new(handle))
     })
 }
@@ -871,9 +955,10 @@ pub unsafe extern "C" fn eki_ks_close(ks: *mut eki_ks) {
     // back is therefore the single release of that allocation, with the type it was made with,
     // and no reference to the handle outlives it.
     let handle = unsafe { Box::from_raw(ks.cast::<Handle>()) };
-    // Dropping the handle drops the backend and every key with it, wiping the key material. No
-    // drop on that path is expected to panic, but a backend's drop may call into other code, and
-    // a panic must not unwind into C.
+    // Dropping the handle drops the backend: the software backend wipes every key, the PKCS#11
+    // backend closes its session and releases its module, which finalises the module at the last
+    // handle. No drop on that path is expected to panic, but a backend's drop calls into other
+    // code, and a panic must not unwind into C.
     contain_panic((), move || drop(handle));
 }
 

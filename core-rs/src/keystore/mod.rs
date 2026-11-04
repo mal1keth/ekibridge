@@ -305,6 +305,12 @@ impl Handle {
     ///   and a single removal. Neither can stop halfway: the key comparisons are the derived
     ///   `Ord` of a 16-byte array and the values are moved, so nothing in them can panic, and an
     ///   allocation failure aborts the process instead of unwinding.
+    /// - The PKCS#11 backend meets it too. Its own state, the session and the module reference,
+    ///   is never changed by an operation. Each change to the token is one PKCS#11 call
+    ///   (generate, generate pair, unwrap, destroy object), which the token completes or
+    ///   rejects whole, and keys are looked up again on every call, so nothing cached can go
+    ///   stale. An object search is finished by the drop of the search iterator, which also
+    ///   runs during unwinding, so a panic cannot leave the session in the middle of a search.
     ///
     /// The caller of the panicking operation receives `EKI_ERR_INTERNAL`; the next call finds the
     /// store as the last completed operation left it.
@@ -313,19 +319,78 @@ impl Handle {
     }
 }
 
-/// Opens a store for the `backend` selector: validation step 2 of `eki_ks_open`.
+/// The backend a configuration selects, once validation step 2 of `eki_ks_open` has passed.
 ///
-/// The software backend ignores the PKCS#11 fields of the configuration, so the selector is all
-/// this needs for now.
-pub fn open(backend: eki_ks_backend) -> Result<Handle, Error> {
+/// `eki_ks_open` selects first and reads the PKCS#11 fields of the configuration only for
+/// [`Selected::Pkcs11`]: the software backend never reads them, and a backend that is not
+/// compiled in answers before any field is looked at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Selected {
+    /// `EKI_KS_SOFTWARE`.
+    Software,
+    /// `EKI_KS_PKCS11`, in a library built with the `pkcs11` feature.
+    Pkcs11,
+}
+
+/// Validation step 2 of `eki_ks_open`: an unknown selector is `INVALID_ARGUMENT`, the PKCS#11
+/// selector is `UNSUPPORTED` when the backend is not compiled in.
+pub fn select(backend: eki_ks_backend) -> Result<Selected, Error> {
     match backend {
-        EKI_KS_SOFTWARE => Ok(Handle::new(Box::new(software::Software::new()))),
-        // PKCS#11 BACKEND: constructed here once it exists, after the checks of its configuration
-        // fields (NULL checks in field order, then the token label and PIN formats). Until then
-        // the selector is answered as for a backend that is not compiled in (validation step 2),
-        // whatever the `pkcs11` feature says.
+        EKI_KS_SOFTWARE => Ok(Selected::Software),
+        EKI_KS_PKCS11 if cfg!(feature = "pkcs11") => Ok(Selected::Pkcs11),
         EKI_KS_PKCS11 => Err(Error::Unsupported),
         _ => Err(Error::InvalidArgument),
+    }
+}
+
+/// Opens a software store: an empty in-memory map.
+pub fn open_software() -> Handle {
+    Handle::new(Box::new(software::Software::new()))
+}
+
+/// Longest PKCS#11 token label, in bytes: the size of `CK_TOKEN_INFO.label`.
+/// cbindgen:ignore
+pub const PKCS11_TOKEN_LABEL_MAX_LEN: usize = 32;
+
+/// Longest PKCS#11 user PIN, in bytes.
+/// cbindgen:ignore
+pub const PKCS11_USER_PIN_MAX_LEN: usize = 255;
+
+/// The PKCS#11 fields of an `eki_ks_config`, after step 1 for them: each is the text before the
+/// field's NUL, read by `ffi.rs`. The token label and the PIN were read with a bound one byte
+/// past their maximum, so a text without a NUL within that bound arrives one byte too long and
+/// fails its format check.
+#[derive(Clone, Copy, Debug)]
+pub struct Pkcs11Fields<'a> {
+    /// The path of the PKCS#11 module to load.
+    pub module_path: &'a [u8],
+    /// The label of the token to open: 1 to 32 printable bytes.
+    pub token_label: &'a [u8],
+    /// The user PIN: 1 to 255 bytes.
+    pub user_pin: &'a [u8],
+}
+
+/// Opens a PKCS#11 store: validation step 3 for the token label and the PIN, in field order
+/// (`INVALID_ARGUMENT`), then load, initialise, slot, session and login, where every failure is
+/// `EKI_ERR_BACKEND`. There is no handle yet to carry a message, so the reason is dropped and
+/// only the status is reported (plan 4.2, "Last error").
+///
+/// Called only after [`select`] answered [`Selected::Pkcs11`], which it does only when the
+/// backend is compiled in.
+pub fn open_pkcs11(fields: &Pkcs11Fields<'_>) -> Result<Handle, Error> {
+    #[cfg(feature = "pkcs11")]
+    {
+        let config = pkcs11::Config::parse(fields)?;
+        match pkcs11::Pkcs11Backend::open(config) {
+            Ok(backend) => Ok(Handle::new(Box::new(backend))),
+            Err(BackendError::Internal(_)) => Err(Error::Internal),
+            Err(BackendError::Failed(_) | BackendError::AuthFailed) => Err(Error::Backend),
+        }
+    }
+    #[cfg(not(feature = "pkcs11"))]
+    {
+        let _ = fields;
+        Err(Error::Unsupported)
     }
 }
 
@@ -715,14 +780,51 @@ mod tests {
     }
 
     #[test]
-    fn open_answers_by_selector() {
-        assert!(open(EKI_KS_SOFTWARE).is_ok());
-        assert!(matches!(open(EKI_KS_PKCS11), Err(Error::Unsupported)));
+    fn select_answers_by_selector() {
+        assert_eq!(select(EKI_KS_SOFTWARE), Ok(Selected::Software));
+        let pkcs11 = if cfg!(feature = "pkcs11") {
+            Ok(Selected::Pkcs11)
+        } else {
+            Err(Error::Unsupported)
+        };
+        assert_eq!(select(EKI_KS_PKCS11), pkcs11);
         for backend in [0, 3, -1, i32::MIN, i32::MAX] {
-            assert!(matches!(
-                open(eki_ks_backend(backend)),
-                Err(Error::InvalidArgument)
-            ));
+            assert_eq!(select(eki_ks_backend(backend)), Err(Error::InvalidArgument));
+        }
+    }
+
+    #[test]
+    fn pkcs11_field_formats_precede_any_backend_work() {
+        // The module does not exist: a format error must be reported before anything is loaded.
+        let module_path: &[u8] = b"/nonexistent/ekibridge-test-module.so";
+        let expected = |status| {
+            if cfg!(feature = "pkcs11") {
+                status
+            } else {
+                Error::Unsupported
+            }
+        };
+        let long_label = [b'a'; PKCS11_TOKEN_LABEL_MAX_LEN + 1];
+        let long_pin = [b'1'; PKCS11_USER_PIN_MAX_LEN + 1];
+        let max_label = [b'a'; PKCS11_TOKEN_LABEL_MAX_LEN];
+        let max_pin = [b'1'; PKCS11_USER_PIN_MAX_LEN];
+        let rows: [(&[u8], &[u8], Error); 7] = [
+            (b"", b"1234", Error::InvalidArgument),
+            (&long_label, b"1234", Error::InvalidArgument),
+            (b"eki\x01", b"1234", Error::InvalidArgument),
+            (b"eki\x80", b"", Error::InvalidArgument),
+            (b"ekibridge", b"", Error::InvalidArgument),
+            (b"ekibridge", &long_pin, Error::InvalidArgument),
+            // Both at their maximum: the formats pass and loading the module fails.
+            (&max_label, &max_pin, Error::Backend),
+        ];
+        for (token_label, user_pin, status) in rows {
+            let fields = Pkcs11Fields {
+                module_path,
+                token_label,
+                user_pin,
+            };
+            assert_eq!(open_pkcs11(&fields).err(), Some(expected(status)));
         }
     }
 

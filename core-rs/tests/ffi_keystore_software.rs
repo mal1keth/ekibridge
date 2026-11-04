@@ -54,10 +54,6 @@ fn open_unknown_backend_is_invalid() {
 }
 
 #[test]
-// The expected NULL_POINTER needs the PKCS#11 configuration-field checks of `eki_ks_open`, which
-// come with the PKCS#11 backend. Until then `eki_ks_open` answers UNSUPPORTED for EKI_KS_PKCS11
-// in every build, which this test expects only without the `pkcs11` feature, so it runs there.
-#[cfg_attr(feature = "pkcs11", ignore = "lesson L7")]
 fn open_pkcs11_with_null_module_path() {
     // NULL config field → NULL_POINTER, unless PKCS#11 is not compiled in, in which case the
     // selector check (step 2) answers first with UNSUPPORTED.

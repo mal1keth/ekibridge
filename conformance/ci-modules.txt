@@ -7,3 +7,5 @@ hmac
 hkdf
 aead
 ecdsa
+ks_software
+ks_pkcs11
