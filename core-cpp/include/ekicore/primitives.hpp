@@ -65,4 +65,25 @@ using mut_bytes = std::span<std::uint8_t>;
 // will live in.
 [[nodiscard]] eki_status aes_256_key_unwrap(bytes kek32, bytes blob40, mut_bytes key32) noexcept;
 
+// Hybrid KEM, X25519 + ML-KEM-768, the two shared secrets combined by HKDF-SHA256 (see pq.cpp for
+// the layouts and the combiner). The functions are declared in every build. Without EKI_WITH_PQ
+// each one answers EKI_ERR_UNSUPPORTED before it looks at any length. Sizes are pk 1216, sk 96,
+// ct 1120 and ss 32 bytes (EKI_HYBRID_*_LEN); a span of another size gives
+// EKI_ERR_INVALID_ARGUMENT, and the output spans that do have their size are zero-filled on every
+// failure.
+
+// Writes a fresh key pair: pk and sk. sk is 96 random bytes (an X25519 secret and an ML-KEM seed);
+// pk is rebuilt from it.
+[[nodiscard]] eki_status hybrid_kem_keygen(mut_bytes pk, mut_bytes sk) noexcept;
+
+// Encapsulates to pk: writes ct and the shared secret ss. EKI_ERR_INVALID_ARGUMENT when the
+// X25519 part of pk has small order (the Diffie-Hellman result is all zero) or the ML-KEM part is
+// not a valid encapsulation key (FIPS 203 modulus check).
+[[nodiscard]] eki_status hybrid_kem_encap(bytes pk, mut_bytes ct, mut_bytes ss) noexcept;
+
+// Decapsulates ct with sk into ss, rebuilding pk from sk for the combiner. EKI_ERR_INVALID_ARGUMENT
+// when the X25519 part of ct has small order. A ct made for another key, or altered, is not an
+// error: ML-KEM's implicit rejection and the combiner give an unrelated ss.
+[[nodiscard]] eki_status hybrid_kem_decap(bytes sk, bytes ct, mut_bytes ss) noexcept;
+
 } // namespace ekicore

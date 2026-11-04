@@ -43,11 +43,18 @@ add_library(ekicore_primitives OBJECT
   src/hkdf.cpp
   src/aead.cpp
   src/ecdsa.cpp
-  src/keywrap.cpp)
+  src/keywrap.cpp
+  src/pq.cpp)
 set_target_properties(ekicore_primitives PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(ekicore_primitives
   PUBLIC "${PROJECT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(ekicore_primitives PUBLIC OpenSSL::Crypto PRIVATE ekicore_warnings)
+
+# pq.cpp is always compiled: the hybrid KEM primitives are declared in every build, and without
+# EKI_WITH_PQ they answer EKI_ERR_UNSUPPORTED. Only the bodies depend on the option.
+if(EKI_WITH_PQ)
+  target_compile_definitions(ekicore_primitives PRIVATE EKI_WITH_PQ=1)
+endif()
 
 # The key store is part of the library only: it includes secret_buffer.hpp, which depends on
 # EKI_MLOCK, a definition that the library target carries and the object library does not.

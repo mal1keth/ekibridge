@@ -1,7 +1,7 @@
-// Hybrid X25519 + ML-KEM-768 KEM through the C ABI. Disabled until lesson L9 (pq.cpp). Mirrors
-// core-rs/tests/ffi_pq.rs: plan §4.4 hybrid rows and the KEM sequence of §4.2 (NULL checks, then
-// UNSUPPORTED when not compiled in, then the all-zero X25519 and ML-KEM key checks; decapsulation
-// never fails). Which half runs depends on EKI_WITH_PQ (eki_test::kWithPq); the other half skips.
+// Hybrid X25519 + ML-KEM-768 KEM through the C ABI. Mirrors core-rs/tests/ffi_pq.rs: plan §4.4
+// hybrid rows and the KEM sequence of §4.2 (NULL checks, then UNSUPPORTED when not compiled in,
+// then the all-zero X25519 and ML-KEM key checks; decapsulation never fails). Which half runs
+// depends on EKI_WITH_PQ (eki_test::kWithPq); the other half skips.
 
 #include "test_support.hpp"
 
@@ -32,8 +32,8 @@ using Ss = std::array<std::uint8_t, EKI_HYBRID_SS_LEN>;
 constexpr std::size_t kX25519Len = 32;
 constexpr auto kX25519Off = static_cast<std::ptrdiff_t>(kX25519Len);
 
-// Lesson L9. NULL pointers are reported before anything else, with or without PQ.
-TEST(FfiPq, DISABLED_NullPointers) {
+// NULL pointers are reported before anything else, with or without PQ.
+TEST(FfiPq, NullPointers) {
   const Pk pk = prefilled<EKI_HYBRID_PK_LEN>();
   const Sk sk = prefilled<EKI_HYBRID_SK_LEN>();
   const Ct ct = prefilled<EKI_HYBRID_CT_LEN>();
@@ -62,8 +62,8 @@ TEST(FfiPq, DISABLED_NullPointers) {
   EXPECT_EQ(name(eki_hybrid_kem_decap(sk.data(), ct.data(), nullptr)), name(EKI_ERR_NULL_POINTER));
 }
 
-// Lesson L9. §4.4: hybrid (feature off), valid pointers → UNSUPPORTED, outputs zero-filled.
-TEST(FfiPq, DISABLED_UnsupportedWithoutPq) {
+// §4.4: hybrid (feature off), valid pointers → UNSUPPORTED, outputs zero-filled.
+TEST(FfiPq, UnsupportedWithoutPq) {
   if (kWithPq) {
     GTEST_SKIP() << "built with EKI_WITH_PQ";
   }
@@ -124,8 +124,7 @@ protected:
   }
 };
 
-// Lesson L9.
-TEST_F(FfiPqEnabled, DISABLED_RoundTrip) {
+TEST_F(FfiPqEnabled, RoundTrip) {
   Pk pk{};
   Sk sk{};
   Ct ct{};
@@ -153,8 +152,8 @@ TEST_F(FfiPqEnabled, DISABLED_RoundTrip) {
   EXPECT_EQ(ss, ss2);
 }
 
-// Lesson L9. §4.2: implicit rejection; a tampered ML-KEM ciphertext gives OK and another secret.
-TEST_F(FfiPqEnabled, DISABLED_TamperedMlkemCiphertextGivesADifferentSecret) {
+// §4.2: implicit rejection; a tampered ML-KEM ciphertext gives OK and another secret.
+TEST_F(FfiPqEnabled, TamperedMlkemCiphertextGivesADifferentSecret) {
   Pk pk{};
   Sk sk{};
   Ct ct{};
@@ -170,8 +169,7 @@ TEST_F(FfiPqEnabled, DISABLED_TamperedMlkemCiphertextGivesADifferentSecret) {
   }
 }
 
-// Lesson L9.
-TEST_F(FfiPqEnabled, DISABLED_TamperedX25519CiphertextGivesADifferentSecret) {
+TEST_F(FfiPqEnabled, TamperedX25519CiphertextGivesADifferentSecret) {
   Pk pk{};
   Sk sk{};
   Ct ct{};
@@ -184,8 +182,7 @@ TEST_F(FfiPqEnabled, DISABLED_TamperedX25519CiphertextGivesADifferentSecret) {
   EXPECT_NE(other, ss);
 }
 
-// Lesson L9.
-TEST_F(FfiPqEnabled, DISABLED_WrongSecretKeyGivesADifferentSecret) {
+TEST_F(FfiPqEnabled, WrongSecretKeyGivesADifferentSecret) {
   Pk pk{};
   Sk sk{};
   Pk other_pk{};
@@ -200,8 +197,8 @@ TEST_F(FfiPqEnabled, DISABLED_WrongSecretKeyGivesADifferentSecret) {
   EXPECT_NE(other, ss);
 }
 
-// Lesson L9. §4.4: hybrid_encap, pk with all-zero x25519 part → INVALID_ARGUMENT.
-TEST_F(FfiPqEnabled, DISABLED_EncapToAllZeroX25519PartIsInvalid) {
+// §4.4: hybrid_encap, pk with all-zero x25519 part → INVALID_ARGUMENT.
+TEST_F(FfiPqEnabled, EncapToAllZeroX25519PartIsInvalid) {
   Pk pk{};
   Sk sk{};
   ASSERT_TRUE(keypair(pk, sk));
@@ -214,8 +211,8 @@ TEST_F(FfiPqEnabled, DISABLED_EncapToAllZeroX25519PartIsInvalid) {
   EXPECT_TRUE(all_zero(ss));
 }
 
-// Lesson L9. The all-zero X25519 point gives an all-zero shared secret (§4.2) → INVALID_ARGUMENT.
-TEST_F(FfiPqEnabled, DISABLED_DecapWithAllZeroX25519PartIsInvalid) {
+// The all-zero X25519 point gives an all-zero shared secret (§4.2) → INVALID_ARGUMENT.
+TEST_F(FfiPqEnabled, DecapWithAllZeroX25519PartIsInvalid) {
   Pk pk{};
   Sk sk{};
   Ct ct{};
@@ -228,9 +225,9 @@ TEST_F(FfiPqEnabled, DISABLED_DecapWithAllZeroX25519PartIsInvalid) {
   EXPECT_TRUE(all_zero(out));
 }
 
-// Lesson L9. ML-KEM encapsulation-key check (FIPS 203 modulus check): 0xff bytes encode 12-bit
+// ML-KEM encapsulation-key check (FIPS 203 modulus check): 0xff bytes encode 12-bit
 // coefficients of 4095 >= q = 3329 → INVALID_ARGUMENT.
-TEST_F(FfiPqEnabled, DISABLED_EncapToMlkemKeyFailingTheModulusCheckIsInvalid) {
+TEST_F(FfiPqEnabled, EncapToMlkemKeyFailingTheModulusCheckIsInvalid) {
   Pk pk{};
   Sk sk{};
   ASSERT_TRUE(keypair(pk, sk));

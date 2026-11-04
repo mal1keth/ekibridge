@@ -5,9 +5,11 @@
 // the body, which checks every pointer parameter in parameter order (validation step 1) and hands
 // the call on. The barrier turns any exception into EKI_ERR_INTERNAL.
 //
-// The six stateless functions (HMAC, HMAC verify, HKDF, AEAD seal and open, ECDSA verify) hand
-// the call to a primitive (ekicore/primitives.hpp), which performs the selector and length checks
-// itself.
+// The nine stateless functions (HMAC, HMAC verify, HKDF, AEAD seal and open, ECDSA verify, and the
+// three hybrid KEM functions) hand the call to a primitive (ekicore/primitives.hpp), which performs
+// the selector and length checks itself. The hybrid KEM primitives exist in every build and answer
+// EKI_ERR_UNSUPPORTED when the library is built without EKI_WITH_PQ, so the entry points below are
+// the same either way: the pointer checks come first, as validation step 1 requires.
 //
 // The key store functions hand the call to the store logic (ekicore/keystore.hpp) with the
 // handle's mutex held; the store logic performs every later check. The mutex is taken right after
@@ -17,9 +19,6 @@
 // second cannot throw. eki_ks_open hands the configuration to the store logic, which checks the
 // backend selector and, for EKI_KS_PKCS11, the configuration fields; when the library is built
 // without EKI_WITH_PKCS11, EKI_KS_PKCS11 answers EKI_ERR_UNSUPPORTED.
-//
-// The hybrid KEM functions are still stubs that answer EKI_ERR_UNSUPPORTED without touching their
-// arguments.
 
 // The public header comes first so that its EKI_API attribute reaches the definitions.
 #include <ekicore.h>
@@ -315,21 +314,48 @@ eki_status eki_ks_destroy(eki_ks* ks, const eki_key_id* id) {
   });
 }
 
-eki_status eki_hybrid_kem_keygen([[maybe_unused]] uint8_t* pk_out,
-                                 [[maybe_unused]] uint8_t* sk_out) {
-  return EKI_ERR_UNSUPPORTED;
+eki_status eki_hybrid_kem_keygen(uint8_t* pk_out, uint8_t* sk_out) {
+  const std::array outputs{
+      ekicore::fixed_output(pk_out, EKI_HYBRID_PK_LEN),
+      ekicore::fixed_output(sk_out, EKI_HYBRID_SK_LEN),
+  };
+  return ekicore::ffi_barrier(outputs, [&] {
+    const auto pk_span = ekicore::fixed_span(pk_out, EKI_HYBRID_PK_LEN);
+    const auto sk_span = ekicore::fixed_span(sk_out, EKI_HYBRID_SK_LEN);
+    if (!pk_span || !sk_span) {
+      return EKI_ERR_NULL_POINTER;
+    }
+    return ekicore::hybrid_kem_keygen(*pk_span, *sk_span);
+  });
 }
 
-eki_status eki_hybrid_kem_encap([[maybe_unused]] const uint8_t* pk,
-                                [[maybe_unused]] uint8_t* ct_out,
-                                [[maybe_unused]] uint8_t* ss_out) {
-  return EKI_ERR_UNSUPPORTED;
+eki_status eki_hybrid_kem_encap(const uint8_t* pk, uint8_t* ct_out, uint8_t* ss_out) {
+  const std::array outputs{
+      ekicore::fixed_output(ct_out, EKI_HYBRID_CT_LEN),
+      ekicore::fixed_output(ss_out, EKI_HYBRID_SS_LEN),
+  };
+  return ekicore::ffi_barrier(outputs, [&] {
+    const auto pk_span = ekicore::fixed_span(pk, EKI_HYBRID_PK_LEN);
+    const auto ct_span = ekicore::fixed_span(ct_out, EKI_HYBRID_CT_LEN);
+    const auto ss_span = ekicore::fixed_span(ss_out, EKI_HYBRID_SS_LEN);
+    if (!pk_span || !ct_span || !ss_span) {
+      return EKI_ERR_NULL_POINTER;
+    }
+    return ekicore::hybrid_kem_encap(*pk_span, *ct_span, *ss_span);
+  });
 }
 
-eki_status eki_hybrid_kem_decap([[maybe_unused]] const uint8_t* sk,
-                                [[maybe_unused]] const uint8_t* ct,
-                                [[maybe_unused]] uint8_t* ss_out) {
-  return EKI_ERR_UNSUPPORTED;
+eki_status eki_hybrid_kem_decap(const uint8_t* sk, const uint8_t* ct, uint8_t* ss_out) {
+  const std::array outputs{ekicore::fixed_output(ss_out, EKI_HYBRID_SS_LEN)};
+  return ekicore::ffi_barrier(outputs, [&] {
+    const auto sk_span = ekicore::fixed_span(sk, EKI_HYBRID_SK_LEN);
+    const auto ct_span = ekicore::fixed_span(ct, EKI_HYBRID_CT_LEN);
+    const auto ss_span = ekicore::fixed_span(ss_out, EKI_HYBRID_SS_LEN);
+    if (!sk_span || !ct_span || !ss_span) {
+      return EKI_ERR_NULL_POINTER;
+    }
+    return ekicore::hybrid_kem_decap(*sk_span, *ct_span, *ss_span);
+  });
 }
 
 } // extern "C"
