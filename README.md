@@ -26,7 +26,7 @@ disabled tests are the specification the implementations are written against.
 | ECDSA P-256 verify | done | done | passing | planned |
 | Key store, software backend | done | done | passing | planned |
 | Key store, PKCS#11 backend | done | done | passing | planned |
-| Hybrid KEM (X25519 + ML-KEM-768) | planned | planned | planned | planned |
+| Hybrid KEM (X25519 + ML-KEM-768) | done | done | passing | planned |
 | Interop callers | passing | passing | n/a | n/a |
 | Bindings (UniFFI, wasm) | n/a | planned | n/a | n/a |
 

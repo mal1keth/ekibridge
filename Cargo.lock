@@ -811,6 +811,7 @@ dependencies = [
  "rand_core",
  "sha3",
  "shake",
+ "zeroize",
 ]
 
 [[package]]
@@ -822,6 +823,7 @@ dependencies = [
  "ctutils",
  "hybrid-array",
  "num-traits",
+ "zeroize",
 ]
 
 [[package]]

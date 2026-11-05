@@ -9,3 +9,4 @@ aead
 ecdsa
 ks_software
 ks_pkcs11
+pq

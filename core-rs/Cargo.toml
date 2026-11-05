@@ -29,7 +29,9 @@ ekicore-abi = { path = "../abi" }
 getrandom = "=0.4.3"
 hkdf = "=0.13.0"
 hmac = "=0.13.0"
-ml-kem = { version = "=0.3.3", optional = true }
+# `zeroize` wipes the decapsulation key (the expanded secret vector and both halves of the seed)
+# when it is dropped. Without it the crate keeps those values in memory after the key is gone.
+ml-kem = { version = "=0.3.3", optional = true, features = ["zeroize"] }
 p256 = { version = "=0.14.0", features = ["ecdsa"] }
 # Not used directly. The `zeroize` feature of chacha20poly1305 does not forward to poly1305, so this
 # line turns on the wipe of the Poly1305 state (the one-time key) through feature unification.

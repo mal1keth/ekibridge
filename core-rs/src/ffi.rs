@@ -7,11 +7,12 @@
 //!
 //! # State
 //!
-//! Every function is implemented except the three hybrid KEM functions, which are stubs that
-//! return `EKI_ERR_UNSUPPORTED` without looking at any argument. The key store functions serve
-//! the software backend and, with the `pkcs11` feature (on by default), the PKCS#11 backend;
-//! without the feature `eki_ks_open` answers `EKI_ERR_UNSUPPORTED` for `EKI_KS_PKCS11` before it
-//! looks at any configuration field.
+//! Every function is implemented. The key store functions serve the software backend and, with
+//! the `pkcs11` feature (on by default), the PKCS#11 backend; without the feature `eki_ks_open`
+//! answers `EKI_ERR_UNSUPPORTED` for `EKI_KS_PKCS11` before it looks at any configuration field.
+//! The three hybrid KEM functions are declared in every build and check their pointers in every
+//! build. With the `pq` feature (off by default) they then call the `pq` module; without it they
+//! answer `EKI_ERR_UNSUPPORTED`, and `barrier` zero-fills their outputs as for any other error.
 //!
 //! # Caller contract
 //!
@@ -87,8 +88,7 @@
 //! a panic terminates the whole host process before `barrier` regains control, so the caller
 //! receives neither `EKI_ERR_INTERNAL` nor zeroed outputs.
 
-// The C ABI fixes the argument lists, and the stubs ignore their arguments.
-#![allow(unused_variables)]
+// The C ABI fixes the argument lists.
 #![allow(clippy::too_many_arguments)]
 // A `# Safety` section on each exported function would be copied into the generated C header.
 // The shared contract is stated once, in the module documentation and in `docs/ffi-contract.md`.
@@ -101,13 +101,18 @@ use std::sync::MutexGuard;
 
 use ekicore_abi::{
     EKI_ABI_VERSION, EKI_AEAD_TAG_LEN, EKI_HKDF_MAX_INPUT_LEN, EKI_HKDF_MAX_OKM_LEN,
-    EKI_HMAC_SHA256_LEN, EKI_LABEL_MAX_LEN, EKI_P256_PUBLIC_KEY_LEN, EKI_P256_SIGNATURE_LEN,
+    EKI_HMAC_SHA256_LEN, EKI_HYBRID_CT_LEN, EKI_HYBRID_PK_LEN, EKI_HYBRID_SK_LEN,
+    EKI_HYBRID_SS_LEN, EKI_LABEL_MAX_LEN, EKI_P256_PUBLIC_KEY_LEN, EKI_P256_SIGNATURE_LEN,
     EKI_WRAPPED_KEY_LEN, eki_aead_alg, eki_key_alg, eki_key_id, eki_key_info, eki_ks,
     eki_ks_config, eki_status,
 };
+#[cfg(feature = "pq")]
+use secrecy::ExposeSecret;
 
 use crate::error::Error;
 use crate::keystore::{self, Handle, KeyId, Store};
+#[cfg(feature = "pq")]
+use crate::pq;
 use crate::{aead, ecdsa, hkdf, hmac};
 
 /// `eki_version()` result: implementation name, a space, the crate version, and a NUL.
@@ -1223,7 +1228,27 @@ pub unsafe extern "C" fn eki_ks_destroy(ks: *mut eki_ks, id: *const eki_key_id) 
 /// library is built without hybrid support.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn eki_hybrid_kem_keygen(pk_out: *mut u8, sk_out: *mut u8) -> eki_status {
-    eki_status::EKI_ERR_UNSUPPORTED
+    // SAFETY: the C caller guarantees C1 and C2 for the `EKI_HYBRID_PK_LEN`-byte `pk_out` and the
+    // `EKI_HYBRID_SK_LEN`-byte `sk_out`, which are the preconditions of `Output::fixed`. The
+    // wrappers are locals of this call, so they do not outlive that guarantee.
+    let (pk_out, sk_out) = unsafe {
+        (
+            Output::fixed::<EKI_HYBRID_PK_LEN>(pk_out),
+            Output::fixed::<EKI_HYBRID_SK_LEN>(sk_out),
+        )
+    };
+    barrier([pk_out, sk_out], |[pk_out, sk_out]| {
+        check_null(&[pk_out, sk_out])?;
+        #[cfg(feature = "pq")]
+        {
+            let (pk, sk) = pq::keygen()?;
+            pk_out.bytes()?.copy_from_slice(&pk);
+            sk_out.bytes()?.copy_from_slice(sk.expose_secret());
+            Ok(())
+        }
+        #[cfg(not(feature = "pq"))]
+        Err(Error::Unsupported)
+    })
 }
 
 /// Encapsulates a fresh shared secret to `pk`: writes the ciphertext to `ct_out` and the shared
@@ -1234,7 +1259,32 @@ pub unsafe extern "C" fn eki_hybrid_kem_encap(
     ct_out: *mut u8,
     ss_out: *mut u8,
 ) -> eki_status {
-    eki_status::EKI_ERR_UNSUPPORTED
+    // SAFETY: the C caller guarantees C1 and C2 for the `EKI_HYBRID_PK_LEN`-byte `pk`, the
+    // `EKI_HYBRID_CT_LEN`-byte `ct_out` and the `EKI_HYBRID_SS_LEN`-byte `ss_out`, which are the
+    // preconditions of `Input::fixed` and `Output::fixed`. The wrappers are locals of this call,
+    // so they do not outlive that guarantee.
+    let (pk, ct_out, ss_out) = unsafe {
+        (
+            Input::fixed::<EKI_HYBRID_PK_LEN>(pk),
+            Output::fixed::<EKI_HYBRID_CT_LEN>(ct_out),
+            Output::fixed::<EKI_HYBRID_SS_LEN>(ss_out),
+        )
+    };
+    barrier([ct_out, ss_out], |[ct_out, ss_out]| {
+        check_null(&[&pk, ct_out, ss_out])?;
+        #[cfg(feature = "pq")]
+        {
+            // `Input::fixed` made `pk` exactly `EKI_HYBRID_PK_LEN` bytes, the only way the
+            // conversion fails.
+            let pk: &pq::PublicKey = pk.bytes()?.try_into().map_err(|_| Error::Internal)?;
+            let (ct, ss) = pq::encap(pk)?;
+            ct_out.bytes()?.copy_from_slice(&ct);
+            ss_out.bytes()?.copy_from_slice(ss.expose_secret());
+            Ok(())
+        }
+        #[cfg(not(feature = "pq"))]
+        Err(Error::Unsupported)
+    })
 }
 
 /// Recovers the shared secret from `ct` with the secret key `sk` and writes it to `ss_out`.
@@ -1244,7 +1294,33 @@ pub unsafe extern "C" fn eki_hybrid_kem_decap(
     ct: *const u8,
     ss_out: *mut u8,
 ) -> eki_status {
-    eki_status::EKI_ERR_UNSUPPORTED
+    // SAFETY: the C caller guarantees C1 and C2 for the `EKI_HYBRID_SK_LEN`-byte `sk`, the
+    // `EKI_HYBRID_CT_LEN`-byte `ct` and the `EKI_HYBRID_SS_LEN`-byte `ss_out`, which are the
+    // preconditions of `Input::fixed` and `Output::fixed`. The wrappers are locals of this call,
+    // so they do not outlive that guarantee.
+    let (sk, ct, ss_out) = unsafe {
+        (
+            Input::fixed::<EKI_HYBRID_SK_LEN>(sk),
+            Input::fixed::<EKI_HYBRID_CT_LEN>(ct),
+            Output::fixed::<EKI_HYBRID_SS_LEN>(ss_out),
+        )
+    };
+    barrier([ss_out], |[ss_out]| {
+        check_null(&[&sk, &ct, ss_out])?;
+        #[cfg(feature = "pq")]
+        {
+            // `Input::fixed` made `sk` and `ct` exactly `EKI_HYBRID_SK_LEN` and
+            // `EKI_HYBRID_CT_LEN` bytes, the only way the conversions fail.
+            let sk: &[u8; EKI_HYBRID_SK_LEN] =
+                sk.bytes()?.try_into().map_err(|_| Error::Internal)?;
+            let ct: &pq::Ciphertext = ct.bytes()?.try_into().map_err(|_| Error::Internal)?;
+            let ss = pq::decap(sk, ct)?;
+            ss_out.bytes()?.copy_from_slice(ss.expose_secret());
+            Ok(())
+        }
+        #[cfg(not(feature = "pq"))]
+        Err(Error::Unsupported)
+    })
 }
 
 #[cfg(test)]

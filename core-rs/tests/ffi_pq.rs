@@ -44,7 +44,6 @@ fn decap(sk: Option<&Sk>, ct: Option<&Ct>, ss: Option<&mut Ss>) -> eki_status {
 
 /// NULL pointers are reported before anything else, with or without the feature.
 #[test]
-#[ignore = "lesson L9"]
 fn null_pointers() {
     use eki_status::EKI_ERR_NULL_POINTER;
     let pk: Pk = [FILL; EKI_HYBRID_PK_LEN];
@@ -129,7 +128,6 @@ mod without_pq {
 
     /// UNSUPPORTED is an error status, so every output is zero-filled (§4.2).
     #[test]
-    #[ignore = "lesson L9"]
     fn unsupported_zeroes_outputs() {
         let mut pk: Pk = [FILL; EKI_HYBRID_PK_LEN];
         let mut sk: Sk = [FILL; EKI_HYBRID_SK_LEN];
@@ -191,7 +189,6 @@ mod with_pq {
     }
 
     #[test]
-    #[ignore = "lesson L9"]
     fn round_trip() {
         let (pk, sk) = new_keypair();
         let (ct, ss) = encapsulate(&pk);
@@ -213,7 +210,6 @@ mod with_pq {
     }
 
     #[test]
-    #[ignore = "lesson L9"]
     fn tampered_mlkem_ciphertext_gives_a_different_secret() {
         // Implicit rejection: decapsulation succeeds with an unrelated secret.
         let (pk, sk) = new_keypair();
@@ -228,7 +224,6 @@ mod with_pq {
     }
 
     #[test]
-    #[ignore = "lesson L9"]
     fn tampered_x25519_ciphertext_gives_a_different_secret() {
         let (pk, sk) = new_keypair();
         let (ct, ss) = encapsulate(&pk);
@@ -240,7 +235,6 @@ mod with_pq {
     }
 
     #[test]
-    #[ignore = "lesson L9"]
     fn wrong_secret_key_gives_a_different_secret() {
         let (pk, _) = new_keypair();
         let (_, other_sk) = new_keypair();
@@ -251,7 +245,6 @@ mod with_pq {
     }
 
     #[test]
-    #[ignore = "lesson L9"]
     fn encap_to_all_zero_x25519_part_is_invalid() {
         let (mut pk, _) = new_keypair();
         pk[..X25519_LEN].fill(0);
@@ -266,7 +259,6 @@ mod with_pq {
     }
 
     #[test]
-    #[ignore = "lesson L9"]
     fn decap_with_all_zero_x25519_part_is_invalid() {
         // The all-zero X25519 point gives an all-zero shared secret (§4.2).
         let (pk, sk) = new_keypair();
@@ -278,7 +270,6 @@ mod with_pq {
     }
 
     #[test]
-    #[ignore = "lesson L9"]
     fn encap_to_mlkem_key_failing_the_modulus_check_is_invalid() {
         // 0xff bytes encode 12-bit coefficients of 4095 ≥ q = 3329 (FIPS 203 §7.2 check).
         let (mut pk, _) = new_keypair();
@@ -294,7 +285,6 @@ mod with_pq {
     }
 
     #[test]
-    #[ignore = "lesson L9"]
     fn key_pairs_share_no_half() {
         // Independent key pairs differ in both the X25519 and the ML-KEM part.
         let (pk1, sk1) = new_keypair();
