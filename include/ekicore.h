@@ -23,7 +23,7 @@
 /**
  * ABI version implemented by both libraries. Bumped only for incompatible changes.
  */
-#define EKI_ABI_VERSION 1
+#define EKI_ABI_VERSION 2
 
 /**
  * Length in bytes of an HMAC-SHA256 tag.
@@ -109,6 +109,26 @@
 #define EKI_HYBRID_SS_LEN 32
 
 /**
+ * Length in bytes of an audit record hash: SHA-256.
+ */
+#define EKI_AUDIT_HASH_LEN 32
+
+/**
+ * Length in bytes of a destroy request made by `eki_ks_destroy_request`.
+ */
+#define EKI_DESTROY_REQUEST_LEN 32
+
+/**
+ * Largest number of approver keys in an `eki_ks_config_v2`.
+ */
+#define EKI_APPROVERS_MAX 8
+
+/**
+ * Largest audit log path length in bytes, excluding the terminating NUL.
+ */
+#define EKI_AUDIT_PATH_MAX_LEN 4096
+
+/**
  * Result of every fallible call. Values are stable and only ever appended.
  */
 enum eki_status
@@ -160,6 +180,15 @@ enum eki_status
    * A panic or exception was caught, or an internal invariant was violated.
    */
   EKI_ERR_INTERNAL = 10,
+  /**
+   * The key's state (retired or revoked) does not permit this operation.
+   */
+  EKI_ERR_KEY_STATE = 11,
+  /**
+   * The handle has dual control: destroying a key needs approvals
+   * (`eki_ks_destroy_request`, `eki_ks_destroy_approve`).
+   */
+  EKI_ERR_APPROVAL_REQUIRED = 12,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -236,6 +265,68 @@ typedef struct eki_key_info {
 } eki_key_info;
 
 /**
+ * Configuration for `eki_ks_open_v2`: the fields of `eki_ks_config`, an optional audit log and
+ * optional approver keys for dual control of destroy. The library copies what it keeps and
+ * keeps no pointer.
+ */
+typedef struct eki_ks_config_v2 {
+  /**
+   * Which backend to open.
+   */
+  eki_ks_backend backend;
+  /**
+   * Path of the PKCS#11 module. PKCS#11 backend only.
+   */
+  const char *pkcs11_module_path;
+  /**
+   * Label of the PKCS#11 token, 1 to 32 printable bytes. PKCS#11 backend only.
+   */
+  const char *pkcs11_token_label;
+  /**
+   * User PIN, 1 to 255 bytes; copied into zeroizing storage. PKCS#11 backend only.
+   */
+  const char *pkcs11_user_pin;
+  /**
+   * NULL for no audit log; otherwise the path of the audit log file, NUL-terminated, 1 to
+   * `EKI_AUDIT_PATH_MAX_LEN` bytes.
+   */
+  const char *audit_log_path;
+  /**
+   * `approver_count` SEC1 uncompressed P-256 public keys of 65 bytes each, back to back.
+   */
+  const uint8_t *approver_public_keys;
+  /**
+   * 0 for single control; otherwise 2 to `EKI_APPROVERS_MAX` distinct approver keys, two of
+   * which must approve every destroy.
+   */
+  size_t approver_count;
+} eki_ks_config_v2;
+
+/**
+ * Lifecycle state of a stored key. The library writes only the three values below; a field
+ * that was zero-filled because the call failed holds 0.
+ */
+typedef int32_t eki_key_state;
+
+/**
+ * Public description of a stored key, with its lifecycle state.
+ */
+typedef struct eki_key_info_v2 {
+  /**
+   * Algorithm of the key.
+   */
+  eki_key_alg alg;
+  /**
+   * Lifecycle state of the key.
+   */
+  eki_key_state state;
+  /**
+   * Label, NUL-padded through byte 64.
+   */
+  char label[65];
+} eki_key_info_v2;
+
+/**
  * AES-256-GCM.
  */
 #define EKI_AEAD_AES_256_GCM 1
@@ -269,6 +360,23 @@ typedef struct eki_key_info {
  * Key store held in a PKCS#11 token.
  */
 #define EKI_KS_PKCS11 2
+
+/**
+ * The key may be used for every operation its algorithm allows. Generated and unwrapped keys
+ * start here.
+ */
+#define EKI_KEY_STATE_ACTIVE 1
+
+/**
+ * Replaced by `eki_ks_rotate`: the key may still verify an HMAC tag, give its public key,
+ * unwrap and be wrapped, but may not sign, make an HMAC tag, wrap or be rotated again.
+ */
+#define EKI_KEY_STATE_RETIRED 2
+
+/**
+ * Revoked by `eki_ks_revoke`: the key may only be described, revoked again and destroyed.
+ */
+#define EKI_KEY_STATE_REVOKED 3
 
 #ifdef __cplusplus
 extern "C" {
@@ -480,6 +588,106 @@ EKI_API eki_status eki_hybrid_kem_encap(const uint8_t *pk, uint8_t *ct_out, uint
  * Recovers the shared secret from `ct` with the secret key `sk` and writes it to `ss_out`.
  */
 EKI_API eki_status eki_hybrid_kem_decap(const uint8_t *sk, const uint8_t *ct, uint8_t *ss_out);
+
+/**
+ * Opens a key store as described by `config` and stores the handle in `*out`; `*out` is NULL on
+ * failure. `eki_ks_open(config)` equals this function with no audit log and no approvers.
+ *
+ * After the backend selector, the fields are checked in field order: the PKCS#11 fields as in
+ * `eki_ks_open` (PKCS#11 backend only), `audit_log_path` (NULL, or 1 to
+ * `EKI_AUDIT_PATH_MAX_LEN` bytes), `approver_count` (0, or 2 to `EKI_APPROVERS_MAX`) and
+ * `approver_public_keys` (non-NULL when `approver_count` is not 0; distinct, valid SEC1
+ * uncompressed P-256 points). A NULL field is reported before any malformed field. The backend
+ * is opened next, and the audit log last: an existing log that fails `eki_audit_verify` is
+ * `EKI_ERR_AUTH_FAILED`; a log that cannot be opened, created or locked is `EKI_ERR_BACKEND`.
+ * The log stays locked for the life of the handle, so a second handle on it fails to open.
+ */
+EKI_API eki_status eki_ks_open_v2(const struct eki_ks_config_v2 *config, struct eki_ks **out);
+
+/**
+ * Reports the algorithm, lifecycle state and label of the key with the given id. Works in every
+ * state.
+ */
+EKI_API
+eki_status eki_ks_get_info_v2(struct eki_ks *ks,
+                              const struct eki_key_id *id,
+                              struct eki_key_info_v2 *info_out);
+
+/**
+ * Replaces the ACTIVE key `old_id` with a new ACTIVE key of the same algorithm and label under a
+ * fresh random id, written to `new_id_out`, and makes the old key RETIRED. A key that is not
+ * ACTIVE is `EKI_ERR_KEY_STATE`.
+ */
+EKI_API
+eki_status eki_ks_rotate(struct eki_ks *ks,
+                         const struct eki_key_id *old_id,
+                         struct eki_key_id *new_id_out);
+
+/**
+ * Makes the key REVOKED, from either other state. Revoking a REVOKED key succeeds and changes
+ * nothing. No state leads back.
+ */
+EKI_API eki_status eki_ks_revoke(struct eki_ks *ks, const struct eki_key_id *id);
+
+/**
+ * Compares `tag`, which must be exactly 32 bytes, with HMAC-SHA256 of `msg` under a stored HMAC
+ * key in constant time. A mismatch returns `EKI_ERR_AUTH_FAILED`. Allowed for ACTIVE and RETIRED
+ * keys.
+ */
+EKI_API
+eki_status eki_ks_hmac_sha256_verify(struct eki_ks *ks,
+                                     const struct eki_key_id *id,
+                                     const uint8_t *msg,
+                                     size_t msg_len,
+                                     const uint8_t *tag,
+                                     size_t tag_len);
+
+/**
+ * Starts the destruction of a key on a handle with approvers: writes 32 fresh random bytes to
+ * `request_out` and remembers them for this key, replacing an earlier request for it. Requests
+ * live in the handle and vanish when it is closed. A handle without approvers returns
+ * `EKI_ERR_UNSUPPORTED`.
+ */
+EKI_API
+eki_status eki_ks_destroy_request(struct eki_ks *ks,
+                                  const struct eki_key_id *id,
+                                  uint8_t *request_out);
+
+/**
+ * Records the approval of a pending destroy request by one approver. `sig` is the 64-byte
+ * `r || s` ECDSA P-256 signature over SHA-256 of the 20 ASCII bytes `ekibridge-destroy-v1`, the
+ * 32 request bytes and the 16 bytes of the key id, made with the private key of
+ * `approver_public_key`. `remaining_out` receives the number of approvals still needed; a second
+ * approval by the same approver changes nothing. When two different approvers have approved, the
+ * key is destroyed, the request is removed and `remaining_out` is 0.
+ */
+EKI_API
+eki_status eki_ks_destroy_approve(struct eki_ks *ks,
+                                  const uint8_t *request,
+                                  const uint8_t *approver_public_key,
+                                  const uint8_t *sig,
+                                  uint32_t *remaining_out);
+
+/**
+ * Writes the hash and the sequence number of the last record of the handle's audit log to
+ * `hash_out` (32 bytes) and `seq_out`. A handle without an audit log returns
+ * `EKI_ERR_UNSUPPORTED`. Kept elsewhere, the hash lets `eki_audit_verify` detect a log whose
+ * tail was cut off, which the chain alone cannot show.
+ */
+EKI_API eki_status eki_ks_audit_head(struct eki_ks *ks, uint8_t *hash_out, uint64_t *seq_out);
+
+/**
+ * Verifies the audit log at `path` (1 to `EKI_AUDIT_PATH_MAX_LEN` bytes) and writes its number
+ * of records to `records_out`. Every line must be a well-formed record whose sequence number,
+ * previous hash and hash continue the chain, and the file must end with a newline. When
+ * `expected_head` (32 bytes) is not NULL, the hash of the last record must equal it (32 zero
+ * bytes for an empty file). Any deviation is `EKI_ERR_AUTH_FAILED`; a file that cannot be
+ * opened or read is `EKI_ERR_BACKEND`.
+ */
+EKI_API
+eki_status eki_audit_verify(const char *path,
+                            const uint8_t *expected_head,
+                            uint64_t *records_out);
 
 #ifdef __cplusplus
 }  // extern "C"

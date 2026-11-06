@@ -10,6 +10,9 @@
 //! * Selectors the caller passes in (`eki_aead_alg`, `eki_key_alg`, `eki_ks_backend`) are
 //!   transparent `i32` newtypes with `const` values, so every C integer is representable and
 //!   an unknown value can be answered with a status instead of undefined behaviour.
+//! * `eki_key_state` is written by the library, but it is a field of `eki_key_info_v2`, which is
+//!   zero-filled on error, and zero is not one of its values. It is therefore a transparent
+//!   `i32` newtype like the selectors, not an enum: a zero-filled field is still a valid value.
 //! * `eki_ks` is opaque: C only ever holds a pointer to it.
 
 #![no_std]
@@ -24,7 +27,7 @@ use core::ffi::c_char;
 // ---------------------------------------------------------------------------------------------
 
 /// ABI version implemented by both libraries. Bumped only for incompatible changes.
-pub const EKI_ABI_VERSION: u32 = 1;
+pub const EKI_ABI_VERSION: u32 = 2;
 /// Length in bytes of an HMAC-SHA256 tag.
 pub const EKI_HMAC_SHA256_LEN: usize = 32;
 /// Length in bytes of an AEAD key (AES-256-GCM and ChaCha20-Poly1305).
@@ -62,6 +65,15 @@ pub const EKI_HYBRID_CT_LEN: usize = 1120;
 /// Length in bytes of a hybrid KEM shared secret.
 pub const EKI_HYBRID_SS_LEN: usize = 32;
 
+/// Length in bytes of an audit record hash: SHA-256.
+pub const EKI_AUDIT_HASH_LEN: usize = 32;
+/// Length in bytes of a destroy request made by `eki_ks_destroy_request`.
+pub const EKI_DESTROY_REQUEST_LEN: usize = 32;
+/// Largest number of approver keys in an `eki_ks_config_v2`.
+pub const EKI_APPROVERS_MAX: usize = 8;
+/// Largest audit log path length in bytes, excluding the terminating NUL.
+pub const EKI_AUDIT_PATH_MAX_LEN: usize = 4096;
+
 // ---------------------------------------------------------------------------------------------
 // Status codes
 // ---------------------------------------------------------------------------------------------
@@ -92,6 +104,11 @@ pub enum eki_status {
     EKI_ERR_BACKEND = 9,
     /// A panic or exception was caught, or an internal invariant was violated.
     EKI_ERR_INTERNAL = 10,
+    /// The key's state (retired or revoked) does not permit this operation.
+    EKI_ERR_KEY_STATE = 11,
+    /// The handle has dual control: destroying a key needs approvals
+    /// (`eki_ks_destroy_request`, `eki_ks_destroy_approve`).
+    EKI_ERR_APPROVAL_REQUIRED = 12,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -131,6 +148,25 @@ pub const EKI_KS_SOFTWARE: eki_ks_backend = eki_ks_backend(1);
 pub const EKI_KS_PKCS11: eki_ks_backend = eki_ks_backend(2);
 
 // ---------------------------------------------------------------------------------------------
+// Key state (written by the library, but zero-filled on error, so zero must be representable)
+// ---------------------------------------------------------------------------------------------
+
+/// Lifecycle state of a stored key. The library writes only the three values below; a field
+/// that was zero-filled because the call failed holds 0.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct eki_key_state(pub i32);
+
+/// The key may be used for every operation its algorithm allows. Generated and unwrapped keys
+/// start here.
+pub const EKI_KEY_STATE_ACTIVE: eki_key_state = eki_key_state(1);
+/// Replaced by `eki_ks_rotate`: the key may still verify an HMAC tag, give its public key,
+/// unwrap and be wrapped, but may not sign, make an HMAC tag, wrap or be rotated again.
+pub const EKI_KEY_STATE_RETIRED: eki_key_state = eki_key_state(2);
+/// Revoked by `eki_ks_revoke`: the key may only be described, revoked again and destroyed.
+pub const EKI_KEY_STATE_REVOKED: eki_key_state = eki_key_state(3);
+
+// ---------------------------------------------------------------------------------------------
 // Structs and the opaque handle
 // ---------------------------------------------------------------------------------------------
 
@@ -148,6 +184,18 @@ pub struct eki_key_id {
 pub struct eki_key_info {
     /// Algorithm of the key.
     pub alg: eki_key_alg,
+    /// Label, NUL-padded through byte 64.
+    pub label: [c_char; 65],
+}
+
+/// Public description of a stored key, with its lifecycle state.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct eki_key_info_v2 {
+    /// Algorithm of the key.
+    pub alg: eki_key_alg,
+    /// Lifecycle state of the key.
+    pub state: eki_key_state,
     /// Label, NUL-padded through byte 64.
     pub label: [c_char; 65],
 }
@@ -171,4 +219,28 @@ pub struct eki_ks_config {
     pub pkcs11_token_label: *const c_char,
     /// User PIN, 1 to 255 bytes; copied into zeroizing storage. PKCS#11 backend only.
     pub pkcs11_user_pin: *const c_char,
+}
+
+/// Configuration for `eki_ks_open_v2`: the fields of `eki_ks_config`, an optional audit log and
+/// optional approver keys for dual control of destroy. The library copies what it keeps and
+/// keeps no pointer.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct eki_ks_config_v2 {
+    /// Which backend to open.
+    pub backend: eki_ks_backend,
+    /// Path of the PKCS#11 module. PKCS#11 backend only.
+    pub pkcs11_module_path: *const c_char,
+    /// Label of the PKCS#11 token, 1 to 32 printable bytes. PKCS#11 backend only.
+    pub pkcs11_token_label: *const c_char,
+    /// User PIN, 1 to 255 bytes; copied into zeroizing storage. PKCS#11 backend only.
+    pub pkcs11_user_pin: *const c_char,
+    /// NULL for no audit log; otherwise the path of the audit log file, NUL-terminated, 1 to
+    /// `EKI_AUDIT_PATH_MAX_LEN` bytes.
+    pub audit_log_path: *const c_char,
+    /// `approver_count` SEC1 uncompressed P-256 public keys of 65 bytes each, back to back.
+    pub approver_public_keys: *const u8,
+    /// 0 for single control; otherwise 2 to `EKI_APPROVERS_MAX` distinct approver keys, two of
+    /// which must approve every destroy.
+    pub approver_count: usize,
 }

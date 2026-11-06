@@ -19,10 +19,10 @@ fn status_name(value: i32) -> String {
 }
 
 #[test]
-fn abi_version_is_one() {
+fn abi_version_is_two() {
     // SAFETY: no arguments, no preconditions.
     let version = unsafe { eki_abi_version() };
-    assert_eq!(version, 1);
+    assert_eq!(version, 2);
     assert_eq!(version, EKI_ABI_VERSION);
 }
 
@@ -63,13 +63,18 @@ fn status_names_of_every_known_value() {
         (eki_status::EKI_ERR_WRONG_KEY_TYPE, "EKI_ERR_WRONG_KEY_TYPE"),
         (eki_status::EKI_ERR_BACKEND, "EKI_ERR_BACKEND"),
         (eki_status::EKI_ERR_INTERNAL, "EKI_ERR_INTERNAL"),
+        (eki_status::EKI_ERR_KEY_STATE, "EKI_ERR_KEY_STATE"),
+        (
+            eki_status::EKI_ERR_APPROVAL_REQUIRED,
+            "EKI_ERR_APPROVAL_REQUIRED",
+        ),
     ];
     for (index, (status, name)) in expected.into_iter().enumerate() {
         let value = status as i32;
         assert_eq!(
             value,
             i32::try_from(index).unwrap(),
-            "values are 0..=10 in order"
+            "values are 0..=12 in order"
         );
         assert_eq!(status_name(value), name, "status {value}");
     }
@@ -77,7 +82,7 @@ fn status_names_of_every_known_value() {
 
 #[test]
 fn status_names_of_unknown_values() {
-    for value in [-1, i32::MIN, i32::MAX, 11, 99] {
+    for value in [-1, i32::MIN, i32::MAX, 13, 99] {
         assert_eq!(status_name(value), "EKI_STATUS_UNKNOWN", "status {value}");
     }
 }

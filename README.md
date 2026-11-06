@@ -27,6 +27,9 @@ disabled tests are the specification the implementations are written against.
 | Key store, software backend | done | done | passing | planned |
 | Key store, PKCS#11 backend | done | done | passing | planned |
 | Hybrid KEM (X25519 + ML-KEM-768) | done | done | passing | planned |
+| Key lifecycle | planned | planned | planned | planned |
+| Audit log | planned | planned | planned | planned |
+| Dual control for destroy | planned | planned | planned | planned |
 | Interop callers | passing | passing | n/a | n/a |
 | Bindings (UniFFI, wasm) | n/a | planned | n/a | n/a |
 

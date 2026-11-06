@@ -19,6 +19,12 @@
 // second cannot throw. eki_ks_open hands the configuration to the store logic, which checks the
 // backend selector and, for EKI_KS_PKCS11, the configuration fields; when the library is built
 // without EKI_WITH_PKCS11, EKI_KS_PKCS11 answers EKI_ERR_UNSUPPORTED.
+//
+// The nine functions ABI version 2 adds (key lifecycle, audit log, dual control of destroy, from
+// eki_ks_open_v2 to eki_audit_verify) have the same shape but do nothing else yet: after the
+// pointer checks they answer EKI_ERR_UNSUPPORTED, and the barrier zero-fills their outputs. The
+// store functions among them take the handle's mutex and reset its last-error text first, as
+// every store call does. eki_ks_open_v2 reads none of its configuration fields yet.
 
 // The public header comes first so that its EKI_API attribute reaches the definitions.
 #include <ekicore.h>
@@ -45,6 +51,21 @@ ekicore::mut_bytes id_output(eki_key_id* id) noexcept {
 ekicore::mut_bytes info_output(eki_key_info* info) noexcept {
   return info == nullptr ? ekicore::mut_bytes{}
                          : ekicore::mut_bytes{reinterpret_cast<std::uint8_t*>(info), sizeof(*info)};
+}
+
+// The bytes of an eki_key_info_v2, uint32_t or uint64_t output that the barrier zero-fills on
+// failure: the whole object, sizeof(T) bytes, padding included.
+template <typename T> ekicore::mut_bytes object_output(T* object) noexcept {
+  return object == nullptr
+             ? ekicore::mut_bytes{}
+             : ekicore::mut_bytes{reinterpret_cast<std::uint8_t*>(object), sizeof(*object)};
+}
+
+// The end of an ABI version 2 store function whose pointers have been checked: the call counts as
+// an operation on ks, so its last-error text is reset, and the operation is not implemented yet.
+eki_status not_implemented(eki_ks& ks) noexcept {
+  ks.last_error.clear();
+  return EKI_ERR_UNSUPPORTED;
 }
 
 } // namespace
@@ -355,6 +376,144 @@ eki_status eki_hybrid_kem_decap(const uint8_t* sk, const uint8_t* ct, uint8_t* s
       return EKI_ERR_NULL_POINTER;
     }
     return ekicore::hybrid_kem_decap(*sk_span, *ct_span, *ss_span);
+  });
+}
+
+// ABI version 2: key lifecycle, audit log, dual control of destroy.
+
+eki_status eki_ks_open_v2(const eki_ks_config_v2* config, eki_ks** out) {
+  // *out is NULL on every failure, so it is cleared before anything can fail.
+  if (out != nullptr) {
+    *out = nullptr;
+  }
+  return ekicore::ffi_barrier([&] {
+    if (config == nullptr || out == nullptr) {
+      return EKI_ERR_NULL_POINTER;
+    }
+    return EKI_ERR_UNSUPPORTED;
+  });
+}
+
+eki_status eki_ks_get_info_v2(eki_ks* ks, const eki_key_id* id, eki_key_info_v2* info_out) {
+  const std::array outputs{object_output(info_out)};
+  return ekicore::ffi_barrier(outputs, [&] {
+    if (ks == nullptr) {
+      return EKI_ERR_NULL_POINTER;
+    }
+    const std::scoped_lock lock{ks->mutex};
+    if (id == nullptr || info_out == nullptr) {
+      return ekicore::keystore::null_pointer(*ks);
+    }
+    return not_implemented(*ks);
+  });
+}
+
+eki_status eki_ks_rotate(eki_ks* ks, const eki_key_id* old_id, eki_key_id* new_id_out) {
+  const std::array outputs{id_output(new_id_out)};
+  return ekicore::ffi_barrier(outputs, [&] {
+    if (ks == nullptr) {
+      return EKI_ERR_NULL_POINTER;
+    }
+    const std::scoped_lock lock{ks->mutex};
+    if (old_id == nullptr || new_id_out == nullptr) {
+      return ekicore::keystore::null_pointer(*ks);
+    }
+    return not_implemented(*ks);
+  });
+}
+
+eki_status eki_ks_revoke(eki_ks* ks, const eki_key_id* id) {
+  return ekicore::ffi_barrier([&] {
+    if (ks == nullptr) {
+      return EKI_ERR_NULL_POINTER;
+    }
+    const std::scoped_lock lock{ks->mutex};
+    if (id == nullptr) {
+      return ekicore::keystore::null_pointer(*ks);
+    }
+    return not_implemented(*ks);
+  });
+}
+
+// tag is sized by tag_len, as in eki_hmac_sha256_verify: tag_len 0 makes a NULL tag an empty span,
+// which the store logic will reject as INVALID_ARGUMENT.
+eki_status eki_ks_hmac_sha256_verify(eki_ks* ks, const eki_key_id* id, const uint8_t* msg,
+                                     size_t msg_len, const uint8_t* tag, size_t tag_len) {
+  return ekicore::ffi_barrier([&] {
+    if (ks == nullptr) {
+      return EKI_ERR_NULL_POINTER;
+    }
+    const std::scoped_lock lock{ks->mutex};
+    const auto msg_span = ekicore::sized_span(msg, msg_len);
+    const auto tag_span = ekicore::sized_span(tag, tag_len);
+    if (id == nullptr || !msg_span || !tag_span) {
+      return ekicore::keystore::null_pointer(*ks);
+    }
+    return not_implemented(*ks);
+  });
+}
+
+eki_status eki_ks_destroy_request(eki_ks* ks, const eki_key_id* id, uint8_t* request_out) {
+  const std::array outputs{ekicore::fixed_output(request_out, EKI_DESTROY_REQUEST_LEN)};
+  return ekicore::ffi_barrier(outputs, [&] {
+    if (ks == nullptr) {
+      return EKI_ERR_NULL_POINTER;
+    }
+    const std::scoped_lock lock{ks->mutex};
+    const auto request_span = ekicore::fixed_span(request_out, EKI_DESTROY_REQUEST_LEN);
+    if (id == nullptr || !request_span) {
+      return ekicore::keystore::null_pointer(*ks);
+    }
+    return not_implemented(*ks);
+  });
+}
+
+eki_status eki_ks_destroy_approve(eki_ks* ks, const uint8_t* request,
+                                  const uint8_t* approver_public_key, const uint8_t* sig,
+                                  uint32_t* remaining_out) {
+  const std::array outputs{object_output(remaining_out)};
+  return ekicore::ffi_barrier(outputs, [&] {
+    if (ks == nullptr) {
+      return EKI_ERR_NULL_POINTER;
+    }
+    const std::scoped_lock lock{ks->mutex};
+    const auto request_span = ekicore::fixed_span(request, EKI_DESTROY_REQUEST_LEN);
+    const auto key_span = ekicore::fixed_span(approver_public_key, EKI_P256_PUBLIC_KEY_LEN);
+    const auto sig_span = ekicore::fixed_span(sig, EKI_P256_SIGNATURE_LEN);
+    if (!request_span || !key_span || !sig_span || remaining_out == nullptr) {
+      return ekicore::keystore::null_pointer(*ks);
+    }
+    return not_implemented(*ks);
+  });
+}
+
+eki_status eki_ks_audit_head(eki_ks* ks, uint8_t* hash_out, uint64_t* seq_out) {
+  const std::array outputs{
+      ekicore::fixed_output(hash_out, EKI_AUDIT_HASH_LEN),
+      object_output(seq_out),
+  };
+  return ekicore::ffi_barrier(outputs, [&] {
+    if (ks == nullptr) {
+      return EKI_ERR_NULL_POINTER;
+    }
+    const std::scoped_lock lock{ks->mutex};
+    const auto hash_span = ekicore::fixed_span(hash_out, EKI_AUDIT_HASH_LEN);
+    if (!hash_span || seq_out == nullptr) {
+      return ekicore::keystore::null_pointer(*ks);
+    }
+    return not_implemented(*ks);
+  });
+}
+
+// expected_head may be NULL (no head to compare with), so it takes no part in the NULL checks.
+eki_status eki_audit_verify(const char* path, const uint8_t* expected_head, uint64_t* records_out) {
+  const std::array outputs{object_output(records_out)};
+  return ekicore::ffi_barrier(outputs, [&] {
+    if (path == nullptr || records_out == nullptr) {
+      return EKI_ERR_NULL_POINTER;
+    }
+    static_cast<void>(expected_head);
+    return EKI_ERR_UNSUPPORTED;
   });
 }
 

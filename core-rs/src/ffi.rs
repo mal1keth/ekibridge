@@ -7,12 +7,20 @@
 //!
 //! # State
 //!
-//! Every function is implemented. The key store functions serve the software backend and, with
-//! the `pkcs11` feature (on by default), the PKCS#11 backend; without the feature `eki_ks_open`
-//! answers `EKI_ERR_UNSUPPORTED` for `EKI_KS_PKCS11` before it looks at any configuration field.
-//! The three hybrid KEM functions are declared in every build and check their pointers in every
-//! build. With the `pq` feature (off by default) they then call the `pq` module; without it they
-//! answer `EKI_ERR_UNSUPPORTED`, and `barrier` zero-fills their outputs as for any other error.
+//! Every function of ABI version 1 is implemented. The key store functions serve the software
+//! backend and, with the `pkcs11` feature (on by default), the PKCS#11 backend; without the
+//! feature `eki_ks_open` answers `EKI_ERR_UNSUPPORTED` for `EKI_KS_PKCS11` before it looks at any
+//! configuration field. The three hybrid KEM functions are declared in every build and check
+//! their pointers in every build. With the `pq` feature (off by default) they then call the `pq`
+//! module; without it they answer `EKI_ERR_UNSUPPORTED`, and `barrier` zero-fills their outputs
+//! as for any other error.
+//!
+//! The nine functions ABI version 2 adds (key lifecycle, audit log, dual control of destroy,
+//! from `eki_ks_open_v2` to `eki_audit_verify`) are declared with their final signatures and
+//! check their pointer parameters in parameter order, but do nothing else yet: after the NULL
+//! checks they answer `EKI_ERR_UNSUPPORTED`, and `barrier` zero-fills their outputs. The store
+//! functions among them take the handle's lock and reset its last-error message first, as every
+//! store call does. `eki_ks_open_v2` reads none of its configuration fields yet.
 //!
 //! # Caller contract
 //!
@@ -32,12 +40,16 @@
 //!   thread included) writes it meanwhile, nor reads an output buffer. The library keeps no
 //!   pointer after returning.
 //! - **C3, no overlap.** No output buffer overlaps any other buffer parameter.
-//! - **C4, structs.** A non-NULL pointer to a struct or pointer parameter (`const eki_key_id *`,
-//!   `eki_key_id *`, `eki_key_info *`, `const eki_ks_config *`, `eki_ks **`) is aligned for its
-//!   type and valid, by C1 and C2, for one value of it: its `sizeof` bytes in one live
-//!   allocation, holding an initialised value for an input. The string fields of an
-//!   `eki_ks_config` are dereferenced only when its `backend` is `EKI_KS_PKCS11` and the library
-//!   has the PKCS#11 backend; otherwise they may hold any value.
+//! - **C4, structs.** A non-NULL pointer to a struct, pointer or integer parameter
+//!   (`const eki_key_id *`, `eki_key_id *`, `eki_key_info *`, `eki_key_info_v2 *`,
+//!   `const eki_ks_config *`, `const eki_ks_config_v2 *`, `eki_ks **`, `uint32_t *`,
+//!   `uint64_t *`) is aligned for its type and valid, by C1 and C2, for one value of it: its
+//!   `sizeof` bytes in one live allocation, holding an initialised value for an input. The string
+//!   fields of an `eki_ks_config` or `eki_ks_config_v2` are dereferenced only when its `backend`
+//!   is `EKI_KS_PKCS11` and the library has the PKCS#11 backend; otherwise they may hold any
+//!   value. A non-NULL `audit_log_path` of an `eki_ks_config_v2` follows C6, and its
+//!   `approver_public_keys` follows C1 for `approver_count * 65` bytes when `approver_count` is
+//!   between 2 and 8; with any other count it is never dereferenced.
 //! - **C5, handles.** A non-NULL `eki_ks *` is a value `eki_ks_open` returned that has not been
 //!   passed to `eki_ks_close`. Any number of threads may use one handle at the same time;
 //!   `eki_ks_close` does not run at the same time as any other call on that handle, and the
@@ -46,7 +58,9 @@
 //!   least 65 readable bytes; the library reads up to the first NUL or 65 bytes, whichever comes
 //!   first, and nothing writes those bytes during the call. The same holds for the
 //!   `pkcs11_token_label` (33 bytes: the 32 of the longest label and its NUL) and the
-//!   `pkcs11_user_pin` (256 bytes) of a PKCS#11 configuration.
+//!   `pkcs11_user_pin` (256 bytes) of a PKCS#11 configuration, and for the `path` of
+//!   `eki_audit_verify` and the `audit_log_path` of an `eki_ks_config_v2` (4097 bytes: the 4096
+//!   of the longest path and its NUL).
 //! - **C7, module path.** A non-NULL `pkcs11_module_path` of a PKCS#11 configuration points to
 //!   a NUL-terminated string that nothing writes during the call. The contract sets no maximum
 //!   length, so the library scans to the NUL without a bound; the C++ library reads the path the
@@ -100,11 +114,12 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::MutexGuard;
 
 use ekicore_abi::{
-    EKI_ABI_VERSION, EKI_AEAD_TAG_LEN, EKI_HKDF_MAX_INPUT_LEN, EKI_HKDF_MAX_OKM_LEN,
-    EKI_HMAC_SHA256_LEN, EKI_HYBRID_CT_LEN, EKI_HYBRID_PK_LEN, EKI_HYBRID_SK_LEN,
-    EKI_HYBRID_SS_LEN, EKI_LABEL_MAX_LEN, EKI_P256_PUBLIC_KEY_LEN, EKI_P256_SIGNATURE_LEN,
-    EKI_WRAPPED_KEY_LEN, eki_aead_alg, eki_key_alg, eki_key_id, eki_key_info, eki_ks,
-    eki_ks_config, eki_status,
+    EKI_ABI_VERSION, EKI_AEAD_TAG_LEN, EKI_AUDIT_HASH_LEN, EKI_AUDIT_PATH_MAX_LEN,
+    EKI_DESTROY_REQUEST_LEN, EKI_HKDF_MAX_INPUT_LEN, EKI_HKDF_MAX_OKM_LEN, EKI_HMAC_SHA256_LEN,
+    EKI_HYBRID_CT_LEN, EKI_HYBRID_PK_LEN, EKI_HYBRID_SK_LEN, EKI_HYBRID_SS_LEN, EKI_LABEL_MAX_LEN,
+    EKI_P256_PUBLIC_KEY_LEN, EKI_P256_SIGNATURE_LEN, EKI_WRAPPED_KEY_LEN, eki_aead_alg,
+    eki_key_alg, eki_key_id, eki_key_info, eki_key_info_v2, eki_ks, eki_ks_config,
+    eki_ks_config_v2, eki_status,
 };
 #[cfg(feature = "pq")]
 use secrecy::ExposeSecret;
@@ -121,7 +136,7 @@ static VERSION: &str = concat!("ekicore-rs ", env!("CARGO_PKG_VERSION"), "\0");
 
 /// Names of the status values, indexed by value.
 /// cbindgen:ignore
-static STATUS_NAMES: [&CStr; 11] = [
+static STATUS_NAMES: [&CStr; 13] = [
     c"EKI_OK",
     c"EKI_ERR_NULL_POINTER",
     c"EKI_ERR_INVALID_ARGUMENT",
@@ -133,6 +148,8 @@ static STATUS_NAMES: [&CStr; 11] = [
     c"EKI_ERR_WRONG_KEY_TYPE",
     c"EKI_ERR_BACKEND",
     c"EKI_ERR_INTERNAL",
+    c"EKI_ERR_KEY_STATE",
+    c"EKI_ERR_APPROVAL_REQUIRED",
 ];
 
 /// Name returned for any integer that is not a status value.
@@ -205,6 +222,24 @@ impl Input {
         // SAFETY: with `len == max == N`, the precondition of `Input::new` is exactly this
         // function's precondition, which the caller of `fixed` guarantees.
         unsafe { Self::new(ptr, N, N) }
+    }
+
+    /// Wraps a fixed-size input of `N` bytes that may be NULL because the contract gives NULL a
+    /// meaning (`expected_head` of `eki_audit_verify`: no head to compare with). NULL becomes an
+    /// empty input, which passes the NULL check and whose `bytes` is `&[]`; any other pointer
+    /// gives `N` bytes. `N` is not zero, so an empty slice always stands for NULL.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` is NULL or valid for reads of `N` bytes within one allocation, and nothing writes
+    /// that memory, for as long as the returned value exists.
+    unsafe fn optional_fixed<const N: usize>(ptr: *const u8) -> Self {
+        const { assert!(N > 0, "a fixed-size input has at least one byte") };
+        let len = if ptr.is_null() { 0 } else { N };
+        // SAFETY: with `len == 0` (NULL) the precondition of `Input::new` requires nothing of
+        // the pointer; with `len == max == N` it is exactly this function's precondition, which
+        // the caller of `optional_fixed` guarantees.
+        unsafe { Self::new(ptr, len, N) }
     }
 
     /// The input as a slice that borrows `self`, so it cannot outlive the wrapper.
@@ -322,6 +357,25 @@ impl OutputParam for Output {
     }
 }
 
+/// Two outputs of different kinds as one `barrier` output: `barrier` takes an array, whose
+/// elements share one type, and `eki_ks_audit_head` writes a byte buffer and a `uint64_t`. The
+/// body receives both wrappers with their own types; on failure both are zero-filled.
+impl<A: OutputParam, B: OutputParam> PointerParam for (A, B) {
+    /// The NULL check of both, the first before the second, as they appear in parameter order.
+    fn non_null(&self) -> Result<(), Error> {
+        self.0.non_null()?;
+        self.1.non_null()
+    }
+}
+
+impl<A: OutputParam, B: OutputParam> OutputParam for (A, B) {
+    /// Zero-fills both outputs under their own rules.
+    fn zero(&mut self) {
+        self.0.zero();
+        self.1.zero();
+    }
+}
+
 /// The outputs of a function that has none, for `barrier`.
 /// cbindgen:ignore
 const NO_OUTPUTS: [Output; 0] = [];
@@ -413,6 +467,11 @@ const TOKEN_LABEL_SCAN_LEN: usize = keystore::PKCS11_TOKEN_LABEL_MAX_LEN + 1;
 /// cbindgen:ignore
 const USER_PIN_SCAN_LEN: usize = keystore::PKCS11_USER_PIN_MAX_LEN + 1;
 
+/// Number of audit log path bytes the library may read: the 4096 of the longest path and its
+/// NUL.
+/// cbindgen:ignore
+const AUDIT_PATH_SCAN_LEN: usize = EKI_AUDIT_PATH_MAX_LEN + 1;
+
 /// A key store handle parameter: `eki_ks *`, or `const eki_ks *` for `eki_ks_last_error_message`.
 ///
 /// Holding one dereferences nothing. `get` turns it into a shared reference to the [`Handle`] the
@@ -464,7 +523,8 @@ impl PointerParam for HandleIn {
     }
 }
 
-/// A pointer to one C value the call reads: `const eki_key_id *` or `const eki_ks_config *`.
+/// A pointer to one C value the call reads: `const eki_key_id *`, `const eki_ks_config *` or
+/// `const eki_ks_config_v2 *`.
 ///
 /// Holding one dereferences nothing; `read` copies the value out after the NULL check, so the
 /// body works on its own copy.
@@ -515,12 +575,24 @@ unsafe impl ZeroFill for eki_key_id {}
 // at zero (the selector value 0, an empty label); its padding bytes have no validity requirement.
 unsafe impl ZeroFill for eki_key_info {}
 
+// SAFETY: `eki_key_info_v2` is `#[repr(C)]` with two `i32` newtypes and a `[c_char; 65]`, all
+// valid at zero (the selector value 0, the state value 0, an empty label); its padding bytes have
+// no validity requirement.
+unsafe impl ZeroFill for eki_key_info_v2 {}
+
+// SAFETY: every bit pattern of a `u32` is a valid value, all zeros included.
+unsafe impl ZeroFill for u32 {}
+
+// SAFETY: every bit pattern of a `u64` is a valid value, all zeros included.
+unsafe impl ZeroFill for u64 {}
+
 // SAFETY: an all-zero raw pointer is the null pointer: `core::ptr::null_mut` is documented as
 // equivalent to zero-initialising the pointer. That is the `*out == NULL` that `eki_ks_open`
 // leaves on failure.
 unsafe impl ZeroFill for *mut eki_ks {}
 
-/// A pointer to one C value the call writes: `eki_key_id *`, `eki_key_info *` or `eki_ks **`.
+/// A pointer to one C value the call writes: `eki_key_id *`, `eki_key_info *`,
+/// `eki_key_info_v2 *`, `eki_ks **`, `uint32_t *` or `uint64_t *`.
 ///
 /// `barrier` owns it and zero-fills it when the call fails. On success the body writes one whole
 /// value with `write`, a typed write that leaves struct padding unspecified, as the contract
@@ -583,9 +655,9 @@ impl<T: ZeroFill> OutputParam for StructOut<T> {
 }
 
 /// A string parameter of which at most `SCAN` bytes are read: a key label (`SCAN` 65), a
-/// PKCS#11 token label (33) or a PKCS#11 user PIN (256). `SCAN` is one more than the longest
-/// valid text, so a text with no NUL within the bound is read as `SCAN` bytes and fails its
-/// length check.
+/// PKCS#11 token label (33), a PKCS#11 user PIN (256) or an audit log path (4097). `SCAN` is one
+/// more than the longest valid text, so a text with no NUL within the bound is read as `SCAN`
+/// bytes and fails its length check.
 struct TextIn<const SCAN: usize> {
     ptr: *const c_char,
 }
@@ -607,7 +679,7 @@ impl<const SCAN: usize> TextIn<SCAN> {
     /// The bytes before the string's NUL, read with a bounded scan that never reads more than
     /// `SCAN` bytes, as the contract requires. When none of the first `SCAN` bytes is NUL the
     /// result is those `SCAN` bytes, which the format check rejects by length (a label has at
-    /// most 64 bytes, a token label 32, a PIN 255). NULL is `Error::NullPointer`.
+    /// most 64 bytes, a token label 32, a PIN 255, a path 4096). NULL is `Error::NullPointer`.
     /// `CStr::from_ptr` is not used because it scans without a bound.
     fn bytes(&self) -> Result<&[u8], Error> {
         self.non_null()?;
@@ -1319,6 +1391,255 @@ pub unsafe extern "C" fn eki_hybrid_kem_decap(
             Ok(())
         }
         #[cfg(not(feature = "pq"))]
+        Err(Error::Unsupported)
+    })
+}
+
+// --- ABI version 2: key lifecycle, audit log, dual control of destroy ---------------------------
+
+/// Opens a key store as described by `config` and stores the handle in `*out`; `*out` is NULL on
+/// failure. `eki_ks_open(config)` equals this function with no audit log and no approvers.
+///
+/// After the backend selector, the fields are checked in field order: the PKCS#11 fields as in
+/// `eki_ks_open` (PKCS#11 backend only), `audit_log_path` (NULL, or 1 to
+/// `EKI_AUDIT_PATH_MAX_LEN` bytes), `approver_count` (0, or 2 to `EKI_APPROVERS_MAX`) and
+/// `approver_public_keys` (non-NULL when `approver_count` is not 0; distinct, valid SEC1
+/// uncompressed P-256 points). A NULL field is reported before any malformed field. The backend
+/// is opened next, and the audit log last: an existing log that fails `eki_audit_verify` is
+/// `EKI_ERR_AUTH_FAILED`; a log that cannot be opened, created or locked is `EKI_ERR_BACKEND`.
+/// The log stays locked for the life of the handle, so a second handle on it fails to open.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn eki_ks_open_v2(
+    config: *const eki_ks_config_v2,
+    out: *mut *mut eki_ks,
+) -> eki_status {
+    // SAFETY: the C caller guarantees C4 (with C1 and C2) for `config`, one `eki_ks_config_v2`,
+    // and for `out`, one `eki_ks *`, which are the preconditions of `StructIn::new` and
+    // `StructOut::new`. The wrappers are locals of this call, so they do not outlive that
+    // guarantee.
+    let (config, out) = unsafe { (StructIn::new(config), StructOut::new(out)) };
+    barrier([out], |[out]| {
+        check_null(&[&config, out])?;
+        Err(Error::Unsupported)
+    })
+}
+
+/// Reports the algorithm, lifecycle state and label of the key with the given id. Works in every
+/// state.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn eki_ks_get_info_v2(
+    ks: *mut eki_ks,
+    id: *const eki_key_id,
+    info_out: *mut eki_key_info_v2,
+) -> eki_status {
+    // SAFETY: the C caller guarantees C5 for `ks` and C4 for `id`, one `eki_key_id`, and for
+    // `info_out`, one `eki_key_info_v2`, which are the preconditions of `HandleIn::new`,
+    // `StructIn::new` and `StructOut::new`. The wrappers are locals of this call, so they do not
+    // outlive that guarantee.
+    let (ks, id, info_out) = unsafe {
+        (
+            HandleIn::new(ks.cast_const()),
+            StructIn::new(id),
+            StructOut::new(info_out),
+        )
+    };
+    barrier([info_out], |[info_out]| {
+        let _store = ks.begin()?;
+        check_null(&[&id, info_out])?;
+        Err(Error::Unsupported)
+    })
+}
+
+/// Replaces the ACTIVE key `old_id` with a new ACTIVE key of the same algorithm and label under a
+/// fresh random id, written to `new_id_out`, and makes the old key RETIRED. A key that is not
+/// ACTIVE is `EKI_ERR_KEY_STATE`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn eki_ks_rotate(
+    ks: *mut eki_ks,
+    old_id: *const eki_key_id,
+    new_id_out: *mut eki_key_id,
+) -> eki_status {
+    // SAFETY: the C caller guarantees C5 for `ks` and C4 for `old_id` and `new_id_out`, one
+    // `eki_key_id` each, which are the preconditions of `HandleIn::new`, `StructIn::new` and
+    // `StructOut::new`. The wrappers are locals of this call, so they do not outlive that
+    // guarantee.
+    let (ks, old_id, new_id_out) = unsafe {
+        (
+            HandleIn::new(ks.cast_const()),
+            StructIn::new(old_id),
+            StructOut::new(new_id_out),
+        )
+    };
+    barrier([new_id_out], |[new_id_out]| {
+        let _store = ks.begin()?;
+        check_null(&[&old_id, new_id_out])?;
+        Err(Error::Unsupported)
+    })
+}
+
+/// Makes the key REVOKED, from either other state. Revoking a REVOKED key succeeds and changes
+/// nothing. No state leads back.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn eki_ks_revoke(ks: *mut eki_ks, id: *const eki_key_id) -> eki_status {
+    // SAFETY: the C caller guarantees C5 for `ks` and C4 for `id`, which are the preconditions of
+    // `HandleIn::new` and `StructIn::new`. The wrappers are locals of this call, so they do not
+    // outlive that guarantee.
+    let (ks, id) = unsafe { (HandleIn::new(ks.cast_const()), StructIn::new(id)) };
+    barrier(NO_OUTPUTS, |[]| {
+        let _store = ks.begin()?;
+        check_null(&[&id])?;
+        Err(Error::Unsupported)
+    })
+}
+
+/// Compares `tag`, which must be exactly 32 bytes, with HMAC-SHA256 of `msg` under a stored HMAC
+/// key in constant time. A mismatch returns `EKI_ERR_AUTH_FAILED`. Allowed for ACTIVE and RETIRED
+/// keys.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn eki_ks_hmac_sha256_verify(
+    ks: *mut eki_ks,
+    id: *const eki_key_id,
+    msg: *const u8,
+    msg_len: usize,
+    tag: *const u8,
+    tag_len: usize,
+) -> eki_status {
+    // SAFETY: the C caller guarantees C5 for `ks`, C4 for `id`, and C1 and C2 for `msg`/`msg_len`
+    // and `tag`/`tag_len`, which are the preconditions of `HandleIn::new`, `StructIn::new` and
+    // `Input::new`. Neither length has a documented maximum (a `tag_len` other than 32 is a
+    // format error, not a cap), so C1 holds for any length passed. The wrappers are locals of
+    // this call, so they do not outlive that guarantee.
+    let (ks, id, msg, tag) = unsafe {
+        (
+            HandleIn::new(ks.cast_const()),
+            StructIn::new(id),
+            Input::new(msg, msg_len, NO_MAX),
+            Input::new(tag, tag_len, NO_MAX),
+        )
+    };
+    barrier(NO_OUTPUTS, |[]| {
+        let _store = ks.begin()?;
+        check_null(&[&id, &msg, &tag])?;
+        Err(Error::Unsupported)
+    })
+}
+
+/// Starts the destruction of a key on a handle with approvers: writes 32 fresh random bytes to
+/// `request_out` and remembers them for this key, replacing an earlier request for it. Requests
+/// live in the handle and vanish when it is closed. A handle without approvers returns
+/// `EKI_ERR_UNSUPPORTED`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn eki_ks_destroy_request(
+    ks: *mut eki_ks,
+    id: *const eki_key_id,
+    request_out: *mut u8,
+) -> eki_status {
+    // SAFETY: the C caller guarantees C5 for `ks`, C4 for `id` and C1 to C3 for the 32-byte
+    // `request_out`, which are the preconditions of `HandleIn::new`, `StructIn::new` and
+    // `Output::fixed`. The wrappers are locals of this call, so they do not outlive that
+    // guarantee.
+    let (ks, id, request_out) = unsafe {
+        (
+            HandleIn::new(ks.cast_const()),
+            StructIn::new(id),
+            Output::fixed::<EKI_DESTROY_REQUEST_LEN>(request_out),
+        )
+    };
+    barrier([request_out], |[request_out]| {
+        let _store = ks.begin()?;
+        check_null(&[&id, request_out])?;
+        Err(Error::Unsupported)
+    })
+}
+
+/// Records the approval of a pending destroy request by one approver. `sig` is the 64-byte
+/// `r || s` ECDSA P-256 signature over SHA-256 of the 20 ASCII bytes `ekibridge-destroy-v1`, the
+/// 32 request bytes and the 16 bytes of the key id, made with the private key of
+/// `approver_public_key`. `remaining_out` receives the number of approvals still needed; a second
+/// approval by the same approver changes nothing. When two different approvers have approved, the
+/// key is destroyed, the request is removed and `remaining_out` is 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn eki_ks_destroy_approve(
+    ks: *mut eki_ks,
+    request: *const u8,
+    approver_public_key: *const u8,
+    sig: *const u8,
+    remaining_out: *mut u32,
+) -> eki_status {
+    // SAFETY: the C caller guarantees C5 for `ks`, C1 and C2 for the 32-byte `request`, the
+    // 65-byte `approver_public_key` and the 64-byte `sig`, and C4 for `remaining_out`, one
+    // `uint32_t`, which are the preconditions of `HandleIn::new`, `Input::fixed` and
+    // `StructOut::new`. The wrappers are locals of this call, so they do not outlive that
+    // guarantee.
+    let (ks, request, approver_public_key, sig, remaining_out) = unsafe {
+        (
+            HandleIn::new(ks.cast_const()),
+            Input::fixed::<EKI_DESTROY_REQUEST_LEN>(request),
+            Input::fixed::<EKI_P256_PUBLIC_KEY_LEN>(approver_public_key),
+            Input::fixed::<EKI_P256_SIGNATURE_LEN>(sig),
+            StructOut::new(remaining_out),
+        )
+    };
+    barrier([remaining_out], |[remaining_out]| {
+        let _store = ks.begin()?;
+        check_null(&[&request, &approver_public_key, &sig, remaining_out])?;
+        Err(Error::Unsupported)
+    })
+}
+
+/// Writes the hash and the sequence number of the last record of the handle's audit log to
+/// `hash_out` (32 bytes) and `seq_out`. A handle without an audit log returns
+/// `EKI_ERR_UNSUPPORTED`. Kept elsewhere, the hash lets `eki_audit_verify` detect a log whose
+/// tail was cut off, which the chain alone cannot show.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn eki_ks_audit_head(
+    ks: *mut eki_ks,
+    hash_out: *mut u8,
+    seq_out: *mut u64,
+) -> eki_status {
+    // SAFETY: the C caller guarantees C5 for `ks`, C1 to C3 for the 32-byte `hash_out` and C4 for
+    // `seq_out`, one `uint64_t`, which are the preconditions of `HandleIn::new`, `Output::fixed`
+    // and `StructOut::new`. The wrappers are locals of this call, so they do not outlive that
+    // guarantee.
+    let (ks, hash_out, seq_out) = unsafe {
+        (
+            HandleIn::new(ks.cast_const()),
+            Output::fixed::<EKI_AUDIT_HASH_LEN>(hash_out),
+            StructOut::<u64>::new(seq_out),
+        )
+    };
+    barrier([(hash_out, seq_out)], |[(hash_out, seq_out)]| {
+        let _store = ks.begin()?;
+        check_null(&[hash_out, seq_out])?;
+        Err(Error::Unsupported)
+    })
+}
+
+/// Verifies the audit log at `path` (1 to `EKI_AUDIT_PATH_MAX_LEN` bytes) and writes its number
+/// of records to `records_out`. Every line must be a well-formed record whose sequence number,
+/// previous hash and hash continue the chain, and the file must end with a newline. When
+/// `expected_head` (32 bytes) is not NULL, the hash of the last record must equal it (32 zero
+/// bytes for an empty file). Any deviation is `EKI_ERR_AUTH_FAILED`; a file that cannot be
+/// opened or read is `EKI_ERR_BACKEND`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn eki_audit_verify(
+    path: *const c_char,
+    expected_head: *const u8,
+    records_out: *mut u64,
+) -> eki_status {
+    // SAFETY: the C caller guarantees C6 (4097 bytes) for `path`, C1 and C2 for the 32-byte
+    // `expected_head`, which may be NULL, and C4 for `records_out`, one `uint64_t`, which are the
+    // preconditions of `TextIn::new`, `Input::optional_fixed` and `StructOut::new`. The wrappers
+    // are locals of this call, so they do not outlive that guarantee.
+    let (path, expected_head, records_out) = unsafe {
+        (
+            TextIn::<AUDIT_PATH_SCAN_LEN>::new(path),
+            Input::optional_fixed::<EKI_AUDIT_HASH_LEN>(expected_head),
+            StructOut::<u64>::new(records_out),
+        )
+    };
+    barrier([records_out], |[records_out]| {
+        check_null(&[&path, &expected_head, records_out])?;
         Err(Error::Unsupported)
     })
 }

@@ -50,6 +50,10 @@ EKI_HYBRID_PK_LEN
 EKI_HYBRID_SK_LEN
 EKI_HYBRID_CT_LEN
 EKI_HYBRID_SS_LEN
+EKI_AUDIT_HASH_LEN
+EKI_DESTROY_REQUEST_LEN
+EKI_APPROVERS_MAX
+EKI_AUDIT_PATH_MAX_LEN
 EKI_AEAD_AES_256_GCM
 EKI_AEAD_CHACHA20_POLY1305
 EKI_KEY_AES_256
@@ -57,6 +61,9 @@ EKI_KEY_HMAC_SHA256
 EKI_KEY_ECDSA_P256
 EKI_KS_SOFTWARE
 EKI_KS_PKCS11
+EKI_KEY_STATE_ACTIVE
+EKI_KEY_STATE_RETIRED
+EKI_KEY_STATE_REVOKED
 "
 missing=0
 count=0
@@ -77,7 +84,7 @@ echo "ok: all $count required #defines are present"
 cat >"$tmp/abi_compile_test.c" <<'EOF_C'
 #include <ekicore.h>
 
-_Static_assert(EKI_ABI_VERSION == 1, "ABI version");
+_Static_assert(EKI_ABI_VERSION == 2, "ABI version");
 _Static_assert(sizeof(eki_status) == 4, "eki_status is 32 bits");
 _Static_assert(sizeof(eki_aead_alg) == 4, "selectors are 32 bits");
 _Static_assert(sizeof(eki_key_id) == EKI_KEY_ID_LEN, "key id size");
@@ -85,6 +92,9 @@ _Static_assert(sizeof(((eki_key_info *)0)->label) == EKI_LABEL_MAX_LEN + 1, "lab
 _Static_assert(EKI_AEAD_MAX_LEN == 68719476704ULL, "AEAD length cap");
 _Static_assert(EKI_WRAPPED_KEY_LEN == EKI_AEAD_KEY_LEN + 8, "RFC 3394 adds 8 bytes");
 _Static_assert(EKI_ERR_INTERNAL == 10, "status values are append-only");
+_Static_assert(EKI_ERR_APPROVAL_REQUIRED == 12, "status values are append-only");
+_Static_assert(sizeof(eki_key_state) == 4, "key state is 32 bits");
+_Static_assert(sizeof(((eki_key_info_v2 *)0)->label) == EKI_LABEL_MAX_LEN + 1, "label size");
 
 /* Uses the config struct and the opaque handle the way a caller would. */
 int main(void) {
@@ -100,7 +110,7 @@ cat >"$tmp/abi_compile_test.cpp" <<'EOF_CPP'
 #include <cstdint>
 #include <type_traits>
 
-static_assert(EKI_ABI_VERSION == 1);
+static_assert(EKI_ABI_VERSION == 2);
 static_assert(sizeof(eki_status) == 4);
 static_assert(std::is_enum_v<eki_status>);
 static_assert(std::is_same_v<std::underlying_type_t<eki_status>, std::int32_t>);
@@ -110,6 +120,9 @@ static_assert(sizeof(eki_key_info::label) == EKI_LABEL_MAX_LEN + 1);
 static_assert(EKI_AEAD_MAX_LEN == 68719476704ULL);
 static_assert(EKI_WRAPPED_KEY_LEN == EKI_AEAD_KEY_LEN + 8);
 static_assert(EKI_ERR_INTERNAL == 10);
+static_assert(EKI_ERR_APPROVAL_REQUIRED == 12);
+static_assert(sizeof(eki_key_state) == 4);
+static_assert(sizeof(eki_key_info_v2::label) == EKI_LABEL_MAX_LEN + 1);
 
 // Uses the config struct and the opaque handle the way a caller would; linkage is checked by
 // scripts/check-exports.sh, not here.

@@ -7,15 +7,15 @@ use common::Report;
 use ekicore_conformance::{EKI_ABI_VERSION, status, status_name};
 
 #[test]
-fn abi_version_is_1_in_both() {
+fn abi_version_is_2_in_both() {
     let Some((a, b)) = common::setup("meta::abi_version") else {
         return;
     };
     let mut r = Report::new("meta::abi_version");
     for lib in [a, b] {
         let v = lib.abi_version();
-        r.check(v == EKI_ABI_VERSION && v == 1, || {
-            format!("{}: eki_abi_version() = {v}, want 1", lib.name())
+        r.check(v == EKI_ABI_VERSION && v == 2, || {
+            format!("{}: eki_abi_version() = {v}, want 2", lib.name())
         });
     }
     r.finish();
@@ -72,7 +72,7 @@ fn status_name_matches_the_harness_table() {
         return;
     };
     let mut r = Report::new("meta::status_name");
-    let mut inputs: Vec<i32> = (0..=11).collect();
+    let mut inputs: Vec<i32> = (0..=13).collect();
     inputs.extend([-1, i32::MIN, i32::MAX, 99]);
     for lib in [a, b] {
         for s in inputs.iter().copied() {
@@ -94,8 +94,8 @@ fn status_name_matches_the_harness_table() {
             }
         }
     }
-    // §4.4: these five map to the unknown name.
-    for s in [-1, i32::MIN, i32::MAX, 11, 99] {
+    // §4.4 and the ABI 2 contract §7: these five map to the unknown name.
+    for s in [-1, i32::MIN, i32::MAX, 13, 99] {
         r.check(status_name(s) == status::UNKNOWN_NAME, || {
             format!("harness table maps {s} to {}", status_name(s))
         });

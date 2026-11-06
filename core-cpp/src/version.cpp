@@ -35,6 +35,10 @@ const char* status_name(std::int32_t status) noexcept {
     return "EKI_ERR_BACKEND";
   case EKI_ERR_INTERNAL:
     return "EKI_ERR_INTERNAL";
+  case EKI_ERR_KEY_STATE:
+    return "EKI_ERR_KEY_STATE";
+  case EKI_ERR_APPROVAL_REQUIRED:
+    return "EKI_ERR_APPROVAL_REQUIRED";
   default:
     return "EKI_STATUS_UNKNOWN";
   }

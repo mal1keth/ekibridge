@@ -10,8 +10,8 @@
 
 namespace {
 
-TEST(Smoke, AbiVersionIsOne) {
-  EXPECT_EQ(eki_abi_version(), 1U);
+TEST(Smoke, AbiVersionIsTwo) {
+  EXPECT_EQ(eki_abi_version(), 2U);
 }
 
 TEST(Smoke, VersionNamesTheImplementation) {
@@ -22,10 +22,12 @@ TEST(Smoke, VersionNamesTheImplementation) {
 TEST(Smoke, StatusNames) {
   EXPECT_STREQ(eki_status_name(0), "EKI_OK");
   EXPECT_STREQ(eki_status_name(10), "EKI_ERR_INTERNAL");
+  EXPECT_STREQ(eki_status_name(11), "EKI_ERR_KEY_STATE");
+  EXPECT_STREQ(eki_status_name(12), "EKI_ERR_APPROVAL_REQUIRED");
 }
 
 TEST(Smoke, UnknownStatusValuesShareOneName) {
-  EXPECT_STREQ(eki_status_name(11), "EKI_STATUS_UNKNOWN");
+  EXPECT_STREQ(eki_status_name(13), "EKI_STATUS_UNKNOWN");
   EXPECT_STREQ(eki_status_name(-1), "EKI_STATUS_UNKNOWN");
 }
 

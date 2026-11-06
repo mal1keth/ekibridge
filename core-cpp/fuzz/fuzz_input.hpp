@@ -26,9 +26,9 @@ inline void require(bool property) {
   }
 }
 
-// Every status of ABI version 1 is in 0..=10 (EKI_OK..EKI_ERR_INTERNAL).
+// Every status of ABI version 2 is in 0..=12 (EKI_OK..EKI_ERR_APPROVAL_REQUIRED).
 inline void require_status_in_range(int32_t status) {
-  require(status >= EKI_OK && status <= EKI_ERR_INTERNAL);
+  require(status >= EKI_OK && status <= EKI_ERR_APPROVAL_REQUIRED);
 }
 
 // A heap allocation of exactly size() bytes, so AddressSanitizer reports a read or write even

@@ -5,11 +5,11 @@
 #   scripts/run-conformance.sh                  modules listed in conformance/ci-modules.txt
 #   scripts/run-conformance.sh --all            every conformance/tests/*.rs module
 #   scripts/run-conformance.sh hmac aead        just these modules
-#   scripts/run-conformance.sh --with-pkcs11    PKCS#11 token available: ks_pkcs11 runs when selected
-#                                               (source scripts/softhsm-init.sh first)
+#   scripts/run-conformance.sh --with-pkcs11    PKCS#11 token available: the ks_pkcs11* modules run
+#                                               when selected (source scripts/softhsm-init.sh first)
 #
 # Without --with-pkcs11 the EKI_PKCS11_* variables are cleared for the test run, so a selected
-# ks_pkcs11 module skips itself; with it they are required. --with-pkcs11 does not add ks_pkcs11
+# ks_pkcs11* module skips itself; with it they are required. --with-pkcs11 does not add ks_pkcs11
 # to the selection (CI passes it together with ci-modules.txt, which lists ks_pkcs11 once the
 # PKCS#11 stores are implemented; --all --with-pkcs11 runs everything).
 #
@@ -19,7 +19,7 @@
 #   EKI_DIFF_N    iterations per function in the differential tests (default 2000)
 #   EKI_DIFF_SEED seed of the differential tests (default 0x454B4942)
 #
-# ks_pkcs11 always runs with --test-threads=1. Exits non-zero if any module fails.
+# The ks_pkcs11* modules always run with --test-threads=1. Exits non-zero if any module fails.
 
 set -euo pipefail
 
@@ -130,9 +130,9 @@ echo "==> EKI_RS_LIB=$EKI_RS_LIB"
 
 if [ "$with_pkcs11" -eq 0 ]; then
   for m in "${selected[@]}"; do
-    if [ "$m" = ks_pkcs11 ]; then
-      echo "==> ks_pkcs11 is selected without --with-pkcs11: it will skip (EKI_PKCS11_* cleared)"
-    fi
+    case $m in
+      ks_pkcs11*) echo "==> $m is selected without --with-pkcs11: it will skip (EKI_PKCS11_* cleared)" ;;
+    esac
   done
   unset EKI_PKCS11_MODULE EKI_PKCS11_TOKEN_LABEL EKI_PKCS11_PIN
 fi
@@ -148,7 +148,7 @@ for m in "${selected[@]}"; do
   echo
   echo "==> conformance module: $m"
   harness_args=(--nocapture)
-  if [ "$m" = ks_pkcs11 ]; then harness_args+=(--test-threads=1); fi
+  case $m in ks_pkcs11*) harness_args+=(--test-threads=1) ;; esac
   if cargo test -q -p ekicore-conformance --test "$m" -- "${harness_args[@]}"; then
     passed+=("$m")
   else

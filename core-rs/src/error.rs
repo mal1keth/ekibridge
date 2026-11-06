@@ -31,6 +31,11 @@ pub enum Error {
     Backend,
     /// An internal invariant did not hold.
     Internal,
+    /// The key exists, but its lifecycle state (retired or revoked) does not allow the
+    /// operation.
+    KeyState,
+    /// The handle has dual control, so a key is destroyed only through approved requests.
+    ApprovalRequired,
 }
 
 impl From<Error> for eki_status {
@@ -46,6 +51,8 @@ impl From<Error> for eki_status {
             Error::Unsupported => eki_status::EKI_ERR_UNSUPPORTED,
             Error::Backend => eki_status::EKI_ERR_BACKEND,
             Error::Internal => eki_status::EKI_ERR_INTERNAL,
+            Error::KeyState => eki_status::EKI_ERR_KEY_STATE,
+            Error::ApprovalRequired => eki_status::EKI_ERR_APPROVAL_REQUIRED,
         }
     }
 }
@@ -66,6 +73,11 @@ mod tests {
             (Error::Unsupported, eki_status::EKI_ERR_UNSUPPORTED),
             (Error::Backend, eki_status::EKI_ERR_BACKEND),
             (Error::Internal, eki_status::EKI_ERR_INTERNAL),
+            (Error::KeyState, eki_status::EKI_ERR_KEY_STATE),
+            (
+                Error::ApprovalRequired,
+                eki_status::EKI_ERR_APPROVAL_REQUIRED,
+            ),
         ];
         for (error, status) in pairs {
             assert_eq!(eki_status::from(error), status, "{error:?}");

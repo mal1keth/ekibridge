@@ -1,7 +1,7 @@
 // Every stateless function of the ABI with arbitrary buffers and a NULL flag per pointer.
 //
 // Properties, from the contract (docs/ffi-contract.md):
-// * the status is a defined value (0..=10);
+// * the status is a defined value (0..=12);
 // * EKI_ERR_NULL_POINTER is only returned when some pointer argument was NULL;
 // * on every failure, each non-NULL output whose length is in its valid range is all zero
 //   (outputs are pre-filled with 0xA5, so an untouched output is caught).

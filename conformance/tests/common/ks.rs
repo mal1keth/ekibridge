@@ -35,7 +35,8 @@ pub fn run(name: &str, body: impl FnOnce(&mut Report) -> Flow<()>) {
     r.finish();
 }
 
-fn step(lib: &Lib, call: &str, s: i32) -> Flow<()> {
+/// `Ok` when `s` is `EKI_OK`; otherwise a failed step naming the library and the call.
+pub fn step(lib: &Lib, call: &str, s: i32) -> Flow<()> {
     if s == EKI_OK {
         Ok(())
     } else {

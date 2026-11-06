@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 
 pub mod ks;
+pub mod lifecycle;
 
 use std::ffi::CString;
 use std::fmt::Write as _;

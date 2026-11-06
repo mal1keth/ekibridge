@@ -21,13 +21,16 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::ptr::{self, NonNull};
 
-pub use ekicore_abi::{eki_key_id, eki_key_info, eki_ks, eki_ks_config};
+pub use ekicore_abi::{
+    eki_key_id, eki_key_info, eki_key_info_v2, eki_ks, eki_ks_config, eki_ks_config_v2,
+};
 
 use ekicore_abi as abi;
 
 /// Fixed lengths from the header, re-exported so tests need only this crate.
 pub use ekicore_abi::{
     EKI_ABI_VERSION, EKI_AEAD_KEY_LEN, EKI_AEAD_MAX_LEN, EKI_AEAD_NONCE_LEN, EKI_AEAD_TAG_LEN,
+    EKI_APPROVERS_MAX, EKI_AUDIT_HASH_LEN, EKI_AUDIT_PATH_MAX_LEN, EKI_DESTROY_REQUEST_LEN,
     EKI_HKDF_MAX_INPUT_LEN, EKI_HKDF_MAX_OKM_LEN, EKI_HMAC_SHA256_LEN, EKI_HYBRID_CT_LEN,
     EKI_HYBRID_PK_LEN, EKI_HYBRID_SK_LEN, EKI_HYBRID_SS_LEN, EKI_KEY_ID_LEN, EKI_LABEL_MAX_LEN,
     EKI_P256_PUBLIC_KEY_LEN, EKI_P256_SIGNATURE_LEN, EKI_WRAPPED_KEY_LEN,
@@ -40,7 +43,8 @@ pub const PREFILL: u8 = 0xA5;
 // Statuses and selectors as raw integers
 // ---------------------------------------------------------------------------------------------
 
-/// Status values of plan §4.1, written out independently of both libraries.
+/// Status values of plan §4.1 and the ABI 2 contract §2, written out independently of both
+/// libraries.
 pub mod status {
     use ekicore_abi::eki_status;
 
@@ -55,12 +59,14 @@ pub mod status {
     pub const EKI_ERR_WRONG_KEY_TYPE: i32 = 8;
     pub const EKI_ERR_BACKEND: i32 = 9;
     pub const EKI_ERR_INTERNAL: i32 = 10;
+    pub const EKI_ERR_KEY_STATE: i32 = 11;
+    pub const EKI_ERR_APPROVAL_REQUIRED: i32 = 12;
 
     /// Name the contract assigns to any value outside the table.
     pub const UNKNOWN_NAME: &str = "EKI_STATUS_UNKNOWN";
 
     /// The harness's own name table.
-    pub const NAMES: [(i32, &str); 11] = [
+    pub const NAMES: [(i32, &str); 13] = [
         (EKI_OK, "EKI_OK"),
         (EKI_ERR_NULL_POINTER, "EKI_ERR_NULL_POINTER"),
         (EKI_ERR_INVALID_ARGUMENT, "EKI_ERR_INVALID_ARGUMENT"),
@@ -72,6 +78,8 @@ pub mod status {
         (EKI_ERR_WRONG_KEY_TYPE, "EKI_ERR_WRONG_KEY_TYPE"),
         (EKI_ERR_BACKEND, "EKI_ERR_BACKEND"),
         (EKI_ERR_INTERNAL, "EKI_ERR_INTERNAL"),
+        (EKI_ERR_KEY_STATE, "EKI_ERR_KEY_STATE"),
+        (EKI_ERR_APPROVAL_REQUIRED, "EKI_ERR_APPROVAL_REQUIRED"),
     ];
 
     // The values above are typed in from the plan; the shared ABI crate must agree with them.
@@ -87,6 +95,8 @@ pub mod status {
         assert!(EKI_ERR_WRONG_KEY_TYPE == eki_status::EKI_ERR_WRONG_KEY_TYPE as i32);
         assert!(EKI_ERR_BACKEND == eki_status::EKI_ERR_BACKEND as i32);
         assert!(EKI_ERR_INTERNAL == eki_status::EKI_ERR_INTERNAL as i32);
+        assert!(EKI_ERR_KEY_STATE == eki_status::EKI_ERR_KEY_STATE as i32);
+        assert!(EKI_ERR_APPROVAL_REQUIRED == eki_status::EKI_ERR_APPROVAL_REQUIRED as i32);
     };
 }
 
@@ -114,6 +124,9 @@ pub mod sel {
     pub const KEY_ECDSA_P256: i32 = abi::EKI_KEY_ECDSA_P256.0;
     pub const KS_SOFTWARE: i32 = abi::EKI_KS_SOFTWARE.0;
     pub const KS_PKCS11: i32 = abi::EKI_KS_PKCS11.0;
+    pub const KEY_STATE_ACTIVE: i32 = abi::EKI_KEY_STATE_ACTIVE.0;
+    pub const KEY_STATE_RETIRED: i32 = abi::EKI_KEY_STATE_RETIRED.0;
+    pub const KEY_STATE_REVOKED: i32 = abi::EKI_KEY_STATE_REVOKED.0;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -278,6 +291,20 @@ pub fn prefill_key_info() -> eki_key_info {
     }
 }
 
+/// An `eki_key_info_v2` whose fields are all [`PREFILL`] bytes.
+pub fn prefill_key_info_v2() -> eki_key_info_v2 {
+    eki_key_info_v2 {
+        alg: abi::eki_key_alg(i32::from_ne_bytes([PREFILL; 4])),
+        state: abi::eki_key_state(i32::from_ne_bytes([PREFILL; 4])),
+        label: [PREFILL as c_char; 65],
+    }
+}
+
+/// A `uint32_t` or `uint64_t` output pre-filled with [`PREFILL`] bytes.
+pub const PREFILL_U32: u32 = u32::from_ne_bytes([PREFILL; 4]);
+/// See [`PREFILL_U32`].
+pub const PREFILL_U64: u64 = u64::from_ne_bytes([PREFILL; 8]);
+
 /// The fields of an `eki_key_info`, comparable and printable (padding bytes are never looked at).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct KeyInfo {
@@ -318,6 +345,49 @@ impl fmt::Debug for KeyInfo {
         f.debug_struct("KeyInfo")
             .field("alg", &self.alg)
             .field("label", &self.label_str())
+            .field("label_bytes", &hex::encode(self.label))
+            .finish()
+    }
+}
+
+/// The fields of an `eki_key_info_v2`, comparable and printable (padding is never looked at).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct KeyInfoV2 {
+    pub alg: i32,
+    pub state: i32,
+    pub label: [u8; 65],
+}
+
+impl KeyInfoV2 {
+    pub fn from_raw(info: &eki_key_info_v2) -> Self {
+        KeyInfoV2 {
+            alg: info.alg.0,
+            state: info.state.0,
+            label: info.label.map(|c| c as u8),
+        }
+    }
+
+    /// True when every field is zero-filled (the outputs-on-error rule).
+    pub fn is_zero(&self) -> bool {
+        self.alg == 0 && self.state == 0 && is_zero(&self.label)
+    }
+
+    /// The `eki_key_info` fields of this value, for comparisons with `eki_ks_get_info`.
+    pub fn v1(&self) -> KeyInfo {
+        KeyInfo {
+            alg: self.alg,
+            label: self.label,
+        }
+    }
+}
+
+impl fmt::Debug for KeyInfoV2 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let v1 = self.v1();
+        f.debug_struct("KeyInfoV2")
+            .field("alg", &self.alg)
+            .field("state", &self.state)
+            .field("label", &v1.label_str())
             .field("label_bytes", &hex::encode(self.label))
             .finish()
     }
@@ -444,6 +514,16 @@ type FnKsUnwrap = unsafe extern "C" fn(
     *const eki_key_id,
 ) -> i32;
 type FnKsDestroy = unsafe extern "C" fn(*mut eki_ks, *const eki_key_id) -> i32;
+type FnKsOpenV2 = unsafe extern "C" fn(*const eki_ks_config_v2, *mut *mut eki_ks) -> i32;
+type FnKsGetInfoV2 =
+    unsafe extern "C" fn(*mut eki_ks, *const eki_key_id, *mut eki_key_info_v2) -> i32;
+type FnKsRotate = unsafe extern "C" fn(*mut eki_ks, *const eki_key_id, *mut eki_key_id) -> i32;
+type FnKsHmacVerify =
+    unsafe extern "C" fn(*mut eki_ks, *const eki_key_id, *const u8, usize, *const u8, usize) -> i32;
+type FnKsDestroyApprove =
+    unsafe extern "C" fn(*mut eki_ks, *const u8, *const u8, *const u8, *mut u32) -> i32;
+type FnKsAuditHead = unsafe extern "C" fn(*mut eki_ks, *mut u8, *mut u64) -> i32;
+type FnAuditVerify = unsafe extern "C" fn(*const c_char, *const u8, *mut u64) -> i32;
 type FnKemKeygen = unsafe extern "C" fn(*mut u8, *mut u8) -> i32;
 type FnKemEncap = unsafe extern "C" fn(*const u8, *mut u8, *mut u8) -> i32;
 type FnKemDecap = unsafe extern "C" fn(*const u8, *const u8, *mut u8) -> i32;
@@ -478,6 +558,15 @@ pub struct Lib {
     hybrid_kem_keygen: FnKemKeygen,
     hybrid_kem_encap: FnKemEncap,
     hybrid_kem_decap: FnKemDecap,
+    ks_open_v2: FnKsOpenV2,
+    ks_get_info_v2: FnKsGetInfoV2,
+    ks_rotate: FnKsRotate,
+    ks_revoke: FnKsDestroy,
+    ks_hmac_sha256_verify: FnKsHmacVerify,
+    ks_destroy_request: FnKsIdOut,
+    ks_destroy_approve: FnKsDestroyApprove,
+    ks_audit_head: FnKsAuditHead,
+    audit_verify: FnAuditVerify,
     // Declared last so it is dropped (unloaded) after nothing else could use the pointers.
     _lib: libloading::Library,
 }
@@ -547,6 +636,15 @@ impl Lib {
             hybrid_kem_keygen: sym!(FnKemKeygen, "eki_hybrid_kem_keygen"),
             hybrid_kem_encap: sym!(FnKemEncap, "eki_hybrid_kem_encap"),
             hybrid_kem_decap: sym!(FnKemDecap, "eki_hybrid_kem_decap"),
+            ks_open_v2: sym!(FnKsOpenV2, "eki_ks_open_v2"),
+            ks_get_info_v2: sym!(FnKsGetInfoV2, "eki_ks_get_info_v2"),
+            ks_rotate: sym!(FnKsRotate, "eki_ks_rotate"),
+            ks_revoke: sym!(FnKsDestroy, "eki_ks_revoke"),
+            ks_hmac_sha256_verify: sym!(FnKsHmacVerify, "eki_ks_hmac_sha256_verify"),
+            ks_destroy_request: sym!(FnKsIdOut, "eki_ks_destroy_request"),
+            ks_destroy_approve: sym!(FnKsDestroyApprove, "eki_ks_destroy_approve"),
+            ks_audit_head: sym!(FnKsAuditHead, "eki_ks_audit_head"),
+            audit_verify: sym!(FnAuditVerify, "eki_audit_verify"),
             name,
             path,
             _lib: lib,
@@ -762,6 +860,52 @@ impl Lib {
         Store { lib: self, raw }
     }
 
+    /// `eki_ks_open_v2` with a well-formed config. On `EKI_OK` with a non-NULL handle the store
+    /// is returned; it is closed when dropped.
+    pub fn ks_open_v2(&self, cfg: &KsConfigV2) -> (i32, Option<Store<'_>>) {
+        let raw_cfg = cfg.as_raw();
+        let sentinel = NonNull::<eki_ks>::dangling().as_ptr();
+        let mut out = sentinel;
+        let st = self.ks_open_v2_raw(Some(&raw_cfg), Some(&mut out));
+        let handle = (!out.is_null() && out != sentinel).then_some(out);
+        match (st, handle) {
+            (status::EKI_OK, Some(raw)) => (st, Some(Store { lib: self, raw })),
+            (_, Some(raw)) => {
+                // Contract violation (a handle on failure). Close it so it does not leak; tests
+                // that check `*out` use `ks_open_v2_raw`.
+                drop(Store { lib: self, raw });
+                (st, None)
+            }
+            (_, None) => (st, None),
+        }
+    }
+
+    /// `eki_ks_open_v2(config, out)` with nothing checked or owned: for the NULL and `*out` rows.
+    /// A non-NULL `*out` left behind is the caller's to close (see [`Lib::adopt`]).
+    pub fn ks_open_v2_raw(
+        &self,
+        config: Option<&eki_ks_config_v2>,
+        out: Option<&mut *mut eki_ks>,
+    ) -> i32 {
+        // SAFETY: `config` is NULL or a config built by `KsConfigV2::as_raw`, whose string
+        // pointers are NULL or NUL-terminated strings and whose key pointer is NULL or covers
+        // `approver_count * 65` bytes (checked there), all outliving the call; `out` is NULL or a
+        // writable pointer slot.
+        unsafe { (self.ks_open_v2)(opt_ref(config), opt_mut(out)) }
+    }
+
+    /// `eki_audit_verify(path, expected_head[32], records_out)`.
+    pub fn audit_verify(
+        &self,
+        path: Option<&CStr>,
+        expected_head: Option<&[u8; 32]>,
+        records_out: Option<&mut u64>,
+    ) -> i32 {
+        // SAFETY: `path` is NULL or a NUL-terminated string; `expected_head` is NULL or 32
+        // readable bytes; `records_out` is NULL or a writable `uint64_t`.
+        unsafe { (self.audit_verify)(opt_cstr(path), opt_ptr(expected_head), opt_mut(records_out)) }
+    }
+
     /// A store wrapper around a NULL handle, for the `ks == NULL` rows. Dropping it calls
     /// `eki_ks_close(NULL)`, which the contract makes a no-op.
     pub fn null_store(&self) -> Store<'_> {
@@ -822,6 +966,81 @@ impl KsConfig {
             pkcs11_module_path: p(&self.module_path),
             pkcs11_token_label: p(&self.token_label),
             pkcs11_user_pin: p(&self.user_pin),
+        }
+    }
+}
+
+/// Owned contents of an `eki_ks_config_v2`. `None` fields are passed as NULL.
+#[derive(Clone, Debug, Default)]
+pub struct KsConfigV2 {
+    pub backend: i32,
+    pub module_path: Option<CString>,
+    pub token_label: Option<CString>,
+    pub user_pin: Option<CString>,
+    pub audit_log_path: Option<CString>,
+    /// The bytes `approver_public_keys` points to (approver keys back to back), or NULL.
+    pub approver_public_keys: Option<Vec<u8>>,
+    pub approver_count: usize,
+}
+
+impl KsConfigV2 {
+    /// The fields of an `eki_ks_open` config, with no audit log and no approvers.
+    pub fn from_v1(cfg: &KsConfig) -> Self {
+        KsConfigV2 {
+            backend: cfg.backend,
+            module_path: cfg.module_path.clone(),
+            token_label: cfg.token_label.clone(),
+            user_pin: cfg.user_pin.clone(),
+            ..Default::default()
+        }
+    }
+
+    /// The software backend with no audit log and no approvers.
+    pub fn software() -> Self {
+        Self::from_v1(&KsConfig::software())
+    }
+
+    /// The same config with an audit log at `path`. Panics if the path contains a NUL byte.
+    pub fn with_audit_log(mut self, path: &Path) -> Self {
+        let bytes = path.as_os_str().as_encoded_bytes().to_vec();
+        self.audit_log_path = Some(CString::new(bytes).expect("audit log path contains a NUL"));
+        self
+    }
+
+    /// The same config with these approver keys (65 bytes each, count = number of keys).
+    pub fn with_approvers(mut self, keys: &[[u8; 65]]) -> Self {
+        self.approver_public_keys = Some(keys.concat());
+        self.approver_count = keys.len();
+        self
+    }
+
+    /// The C struct. Its pointers borrow `self`, which must outlive every use of the result.
+    ///
+    /// Panics (a harness bug) when `approver_public_keys` is a buffer shorter than
+    /// `approver_count * 65` bytes, so a library is never handed a count its buffer does not
+    /// cover.
+    pub fn as_raw(&self) -> eki_ks_config_v2 {
+        let p = |s: &Option<CString>| s.as_deref().map_or(ptr::null(), CStr::as_ptr);
+        if let Some(keys) = &self.approver_public_keys {
+            let need = self.approver_count.checked_mul(EKI_P256_PUBLIC_KEY_LEN);
+            assert!(
+                need.is_some_and(|n| keys.len() >= n),
+                "harness misuse: {} approver key bytes for approver_count {}",
+                keys.len(),
+                self.approver_count
+            );
+        }
+        eki_ks_config_v2 {
+            backend: abi::eki_ks_backend(self.backend),
+            pkcs11_module_path: p(&self.module_path),
+            pkcs11_token_label: p(&self.token_label),
+            pkcs11_user_pin: p(&self.user_pin),
+            audit_log_path: p(&self.audit_log_path),
+            approver_public_keys: self
+                .approver_public_keys
+                .as_ref()
+                .map_or(ptr::null(), |k| k.as_ptr()),
+            approver_count: self.approver_count,
         }
     }
 }
@@ -940,6 +1159,78 @@ impl<'l> Store<'l> {
     pub fn destroy(&self, id: Option<&eki_key_id>) -> i32 {
         // SAFETY: `raw` as in `generate`; `id` is NULL or readable.
         unsafe { (self.lib.ks_destroy)(self.raw, opt_ref(id)) }
+    }
+
+    /// `eki_ks_get_info_v2(ks, id, info_out)`.
+    pub fn get_info_v2(
+        &self,
+        id: Option<&eki_key_id>,
+        info_out: Option<&mut eki_key_info_v2>,
+    ) -> i32 {
+        // SAFETY: `raw` as in `generate`; `id` is NULL or a readable id; `info_out` is NULL or a
+        // writable `eki_key_info_v2`.
+        unsafe { (self.lib.ks_get_info_v2)(self.raw, opt_ref(id), opt_mut(info_out)) }
+    }
+
+    /// `eki_ks_rotate(ks, old_id, new_id_out)`.
+    pub fn rotate(&self, old_id: Option<&eki_key_id>, new_id_out: Option<&mut eki_key_id>) -> i32 {
+        // SAFETY: `raw` as in `generate`; `old_id` is NULL or readable; `new_id_out` is NULL or a
+        // writable `eki_key_id`.
+        unsafe { (self.lib.ks_rotate)(self.raw, opt_ref(old_id), opt_mut(new_id_out)) }
+    }
+
+    /// `eki_ks_revoke(ks, id)`.
+    pub fn revoke(&self, id: Option<&eki_key_id>) -> i32 {
+        // SAFETY: `raw` as in `generate`; `id` is NULL or readable.
+        unsafe { (self.lib.ks_revoke)(self.raw, opt_ref(id)) }
+    }
+
+    /// `eki_ks_hmac_sha256_verify(ks, id, msg, tag)`.
+    pub fn hmac_sha256_verify(&self, id: Option<&eki_key_id>, msg: In, tag: In) -> i32 {
+        let (m, ml) = msg.raw();
+        let (t, tl) = tag.raw();
+        // SAFETY: `raw` and `id` as in `get_info`; `msg` and `tag` are NULL or point to as many
+        // readable bytes as the length passed with them.
+        unsafe { (self.lib.ks_hmac_sha256_verify)(self.raw, opt_ref(id), m, ml, t, tl) }
+    }
+
+    /// `eki_ks_destroy_request(ks, id, request_out[32])`.
+    pub fn destroy_request(
+        &self,
+        id: Option<&eki_key_id>,
+        request_out: Option<&mut [u8; 32]>,
+    ) -> i32 {
+        // SAFETY: `raw` and `id` as in `get_info`; `request_out` is NULL or 32 writable bytes.
+        unsafe { (self.lib.ks_destroy_request)(self.raw, opt_ref(id), opt_mut_ptr(request_out)) }
+    }
+
+    /// `eki_ks_destroy_approve(ks, request[32], approver_public_key[65], sig[64],
+    /// remaining_out)`.
+    pub fn destroy_approve(
+        &self,
+        request: Option<&[u8; 32]>,
+        approver_public_key: Option<&[u8; 65]>,
+        sig: Option<&[u8; 64]>,
+        remaining_out: Option<&mut u32>,
+    ) -> i32 {
+        // SAFETY: `raw` as in `generate`; each array is NULL or exactly its fixed size;
+        // `remaining_out` is NULL or a writable `uint32_t`.
+        unsafe {
+            (self.lib.ks_destroy_approve)(
+                self.raw,
+                opt_ptr(request),
+                opt_ptr(approver_public_key),
+                opt_ptr(sig),
+                opt_mut(remaining_out),
+            )
+        }
+    }
+
+    /// `eki_ks_audit_head(ks, hash_out[32], seq_out)`.
+    pub fn audit_head(&self, hash_out: Option<&mut [u8; 32]>, seq_out: Option<&mut u64>) -> i32 {
+        // SAFETY: `raw` as in `generate`; `hash_out` is NULL or 32 writable bytes; `seq_out` is
+        // NULL or a writable `uint64_t`.
+        unsafe { (self.lib.ks_audit_head)(self.raw, opt_mut_ptr(hash_out), opt_mut(seq_out)) }
     }
 
     /// `eki_ks_last_error_message(ks, buf, buf_len)` with a caller buffer (`None` passes NULL with
@@ -1132,7 +1423,7 @@ mod tests {
             assert_eq!(*v, i as i32);
             assert_eq!(status_name(*v), *n);
         }
-        for s in [-1, 11, 99, i32::MIN, i32::MAX] {
+        for s in [-1, 13, 99, i32::MIN, i32::MAX] {
             assert_eq!(status_name(s), status::UNKNOWN_NAME);
         }
     }

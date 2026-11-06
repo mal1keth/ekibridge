@@ -14,8 +14,8 @@ pub const EKI_OK: i32 = 0;
 pub const EKI_ERR_NULL_POINTER: i32 = 1;
 /// `EKI_ERR_UNSUPPORTED`. Today's stubs return it without looking at their arguments.
 pub const EKI_ERR_UNSUPPORTED: i32 = 4;
-/// `EKI_ERR_INTERNAL`, the largest status value of ABI version 1.
-pub const EKI_STATUS_MAX: i32 = 10;
+/// `EKI_ERR_APPROVAL_REQUIRED`, the largest status value of ABI version 2.
+pub const EKI_STATUS_MAX: i32 = 12;
 
 /// Upper bound (inclusive) of the HKDF output length the targets ask for: a little past
 /// `EKI_HKDF_MAX_OKM_LEN` (8160), so both sides of the limit get exercised.
@@ -25,7 +25,7 @@ pub const OKM_LEN_FUZZ_MAX: usize = 9000;
 /// `EKI_LABEL_MAX_LEN` (64) so labels without a NUL in the first 65 bytes are covered.
 pub const LABEL_FUZZ_MAX: usize = 80;
 
-/// Panics unless `status` is one of the values ABI version 1 defines (0..=10).
+/// Panics unless `status` is one of the values ABI version 2 defines (0..=12).
 pub fn assert_status_in_range(function: &str, status: i32) {
     assert!(
         (EKI_OK..=EKI_STATUS_MAX).contains(&status),

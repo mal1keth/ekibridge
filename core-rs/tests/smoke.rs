@@ -13,10 +13,10 @@ fn read(ptr: *const std::ffi::c_char) -> String {
 }
 
 #[test]
-fn abi_version_is_one() {
+fn abi_version_is_two() {
     // SAFETY: `eki_abi_version` takes no arguments and has no preconditions.
     let version = unsafe { eki_abi_version() };
-    assert_eq!(version, 1);
+    assert_eq!(version, 2);
     assert_eq!(version, ekicore_abi::EKI_ABI_VERSION);
 }
 
@@ -36,7 +36,9 @@ fn status_names_match_the_header() {
         (0, "EKI_OK"),
         (5, "EKI_ERR_AUTH_FAILED"),
         (10, "EKI_ERR_INTERNAL"),
-        (11, "EKI_STATUS_UNKNOWN"),
+        (11, "EKI_ERR_KEY_STATE"),
+        (12, "EKI_ERR_APPROVAL_REQUIRED"),
+        (13, "EKI_STATUS_UNKNOWN"),
         (-1, "EKI_STATUS_UNKNOWN"),
     ] {
         // SAFETY: `eki_status_name` takes a plain integer and has no preconditions.
