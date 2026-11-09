@@ -62,6 +62,10 @@ add_library(ekicore SHARED
   src/version.cpp
   src/ffi.cpp
   src/keystore/store.cpp
+  src/keystore/open.cpp
+  src/keystore/lifecycle.cpp
+  src/keystore/audit_log.cpp
+  src/keystore/dual_control.cpp
   src/keystore/software.cpp)
 set_target_properties(ekicore PROPERTIES OUTPUT_NAME ekicore)
 

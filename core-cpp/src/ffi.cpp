@@ -16,15 +16,14 @@
 // the ks NULL check, so that a call with another NULL pointer still resets the handle's last-error
 // text like every other call on it. eki_ks_last_error_message and eki_ks_close return no status
 // and have no barrier: the first catches the one exception it can meet (taking the lock), the
-// second cannot throw. eki_ks_open hands the configuration to the store logic, which checks the
-// backend selector and, for EKI_KS_PKCS11, the configuration fields; when the library is built
+// second cannot throw. eki_ks_open and eki_ks_open_v2 hand the configuration to the store logic,
+// which checks the backend selector and the configuration fields; when the library is built
 // without EKI_WITH_PKCS11, EKI_KS_PKCS11 answers EKI_ERR_UNSUPPORTED.
 //
-// The nine functions ABI version 2 adds (key lifecycle, audit log, dual control of destroy, from
-// eki_ks_open_v2 to eki_audit_verify) have the same shape but do nothing else yet: after the
-// pointer checks they answer EKI_ERR_UNSUPPORTED, and the barrier zero-fills their outputs. The
-// store functions among them take the handle's mutex and reset its last-error text first, as
-// every store call does. eki_ks_open_v2 reads none of its configuration fields yet.
+// The functions ABI version 2 adds (key lifecycle, audit log, dual control of destroy, from
+// eki_ks_open_v2 to eki_audit_verify) have the same shape. A call that fails its pointer checks
+// never reaches the store logic, so it writes no audit record. eki_audit_verify needs no handle and
+// takes no lock.
 
 // The public header comes first so that its EKI_API attribute reaches the definitions.
 #include <ekicore.h>
@@ -35,7 +34,6 @@
 
 #include <array>
 #include <cstdint>
-#include <memory>
 #include <mutex>
 #include <span>
 
@@ -59,13 +57,6 @@ template <typename T> ekicore::mut_bytes object_output(T* object) noexcept {
   return object == nullptr
              ? ekicore::mut_bytes{}
              : ekicore::mut_bytes{reinterpret_cast<std::uint8_t*>(object), sizeof(*object)};
-}
-
-// The end of an ABI version 2 store function whose pointers have been checked: the call counts as
-// an operation on ks, so its last-error text is reset, and the operation is not implemented yet.
-eki_status not_implemented(eki_ks& ks) noexcept {
-  ks.last_error.clear();
-  return EKI_ERR_UNSUPPORTED;
 }
 
 } // namespace
@@ -188,10 +179,11 @@ eki_status eki_ks_open(const eki_ks_config* config, eki_ks** out) {
   });
 }
 
-// No lock: the contract forbids racing close with any other call on the handle. Destroying the
-// handle destroys its backend, which wipes every key it holds; nothing in that path throws.
+// No lock: the contract forbids racing close with any other call on the handle. The store logic
+// writes the close record, if the handle has an audit log, and destroys the handle, which wipes
+// every key the backend holds; nothing in that path throws.
 void eki_ks_close(eki_ks* ks) {
-  const std::unique_ptr<eki_ks> owned{ks};
+  ekicore::keystore::close(ks);
 }
 
 size_t eki_ks_last_error_message(const eki_ks* ks, char* buf, size_t buf_len) {
@@ -390,7 +382,7 @@ eki_status eki_ks_open_v2(const eki_ks_config_v2* config, eki_ks** out) {
     if (config == nullptr || out == nullptr) {
       return EKI_ERR_NULL_POINTER;
     }
-    return EKI_ERR_UNSUPPORTED;
+    return ekicore::keystore::open_v2(*config, *out);
   });
 }
 
@@ -404,7 +396,7 @@ eki_status eki_ks_get_info_v2(eki_ks* ks, const eki_key_id* id, eki_key_info_v2*
     if (id == nullptr || info_out == nullptr) {
       return ekicore::keystore::null_pointer(*ks);
     }
-    return not_implemented(*ks);
+    return ekicore::keystore::get_info_v2(*ks, ekicore::keystore::to_key_id(*id), *info_out);
   });
 }
 
@@ -418,7 +410,7 @@ eki_status eki_ks_rotate(eki_ks* ks, const eki_key_id* old_id, eki_key_id* new_i
     if (old_id == nullptr || new_id_out == nullptr) {
       return ekicore::keystore::null_pointer(*ks);
     }
-    return not_implemented(*ks);
+    return ekicore::keystore::rotate(*ks, ekicore::keystore::to_key_id(*old_id), *new_id_out);
   });
 }
 
@@ -431,12 +423,12 @@ eki_status eki_ks_revoke(eki_ks* ks, const eki_key_id* id) {
     if (id == nullptr) {
       return ekicore::keystore::null_pointer(*ks);
     }
-    return not_implemented(*ks);
+    return ekicore::keystore::revoke(*ks, ekicore::keystore::to_key_id(*id));
   });
 }
 
 // tag is sized by tag_len, as in eki_hmac_sha256_verify: tag_len 0 makes a NULL tag an empty span,
-// which the store logic will reject as INVALID_ARGUMENT.
+// which the store logic rejects as INVALID_ARGUMENT.
 eki_status eki_ks_hmac_sha256_verify(eki_ks* ks, const eki_key_id* id, const uint8_t* msg,
                                      size_t msg_len, const uint8_t* tag, size_t tag_len) {
   return ekicore::ffi_barrier([&] {
@@ -449,7 +441,8 @@ eki_status eki_ks_hmac_sha256_verify(eki_ks* ks, const eki_key_id* id, const uin
     if (id == nullptr || !msg_span || !tag_span) {
       return ekicore::keystore::null_pointer(*ks);
     }
-    return not_implemented(*ks);
+    return ekicore::keystore::hmac_sha256_verify(*ks, ekicore::keystore::to_key_id(*id), *msg_span,
+                                                 *tag_span);
   });
 }
 
@@ -464,7 +457,8 @@ eki_status eki_ks_destroy_request(eki_ks* ks, const eki_key_id* id, uint8_t* req
     if (id == nullptr || !request_span) {
       return ekicore::keystore::null_pointer(*ks);
     }
-    return not_implemented(*ks);
+    return ekicore::keystore::destroy_request(*ks, ekicore::keystore::to_key_id(*id),
+                                              *request_span);
   });
 }
 
@@ -483,7 +477,8 @@ eki_status eki_ks_destroy_approve(eki_ks* ks, const uint8_t* request,
     if (!request_span || !key_span || !sig_span || remaining_out == nullptr) {
       return ekicore::keystore::null_pointer(*ks);
     }
-    return not_implemented(*ks);
+    return ekicore::keystore::destroy_approve(*ks, *request_span, *key_span, *sig_span,
+                                              *remaining_out);
   });
 }
 
@@ -501,7 +496,7 @@ eki_status eki_ks_audit_head(eki_ks* ks, uint8_t* hash_out, uint64_t* seq_out) {
     if (!hash_span || seq_out == nullptr) {
       return ekicore::keystore::null_pointer(*ks);
     }
-    return not_implemented(*ks);
+    return ekicore::keystore::audit_head(*ks, *hash_span, *seq_out);
   });
 }
 
@@ -512,8 +507,10 @@ eki_status eki_audit_verify(const char* path, const uint8_t* expected_head, uint
     if (path == nullptr || records_out == nullptr) {
       return EKI_ERR_NULL_POINTER;
     }
-    static_cast<void>(expected_head);
-    return EKI_ERR_UNSUPPORTED;
+    const ekicore::bytes head = expected_head == nullptr
+                                    ? ekicore::bytes{}
+                                    : ekicore::bytes{expected_head, EKI_AUDIT_HASH_LEN};
+    return ekicore::keystore::audit_verify(path, head, *records_out);
   });
 }
 

@@ -1,6 +1,6 @@
 // The software backend of the key store: keys live in memory, in a map owned by the handle, and
 // disappear with it. Secret keys (AES-256, HMAC-SHA256) are 32 bytes in a secret_buffer; an ECDSA
-// P-256 key pair is an OpenSSL EVP_PKEY.
+// P-256 key pair is an OpenSSL EVP_PKEY. The lifecycle state of a key is a field of its entry.
 
 #include <ekicore/keystore.hpp>
 #include <ekicore/openssl_raii.hpp>
@@ -13,6 +13,7 @@
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -43,6 +44,7 @@ struct software_key {
   key_alg alg;
   key_label label;
   material key;
+  key_state state = key_state::active;
 };
 
 // Draws a new 32-byte secret straight into its secret_buffer. RAND_priv_bytes is OpenSSL's RNG
@@ -125,7 +127,7 @@ public:
     found = key_lookup{};
     if (entry != keys_.end()) {
       found.exists = true;
-      found.info.emplace(entry->second.alg, entry->second.label);
+      found.info.emplace(entry->second.alg, entry->second.label, entry->second.state);
     }
     return {};
   }
@@ -213,6 +215,25 @@ public:
       return precondition_failed();
     }
     return {};
+  }
+
+  outcome set_state(const key_id& id, key_state state) override {
+    const auto entry = keys_.find(id);
+    if (entry == keys_.end()) {
+      return precondition_failed();
+    }
+    // Forward only: a state earlier than the key's leaves it as it is.
+    entry->second.state = std::max(entry->second.state, state);
+    return {};
+  }
+
+  outcome hmac_sha256_verify(const key_id& id, bytes msg, bytes tag32) override {
+    const secret_buffer* key = secret_of(id);
+    if (key == nullptr) {
+      return precondition_failed();
+    }
+    return from_primitive(ekicore::hmac_sha256_verify(key->span(), msg, tag32),
+                          "HMAC-SHA256 verification");
   }
 
 private:

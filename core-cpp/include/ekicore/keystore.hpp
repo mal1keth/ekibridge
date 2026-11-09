@@ -3,12 +3,14 @@
 // The key store behind the eki_ks_* functions, in three layers:
 //
 // 1. The handle, struct eki_ks (the opaque type of the public header): a mutex, the last-error
-//    text and one backend. The mutex serialises every operation on the handle; the extern "C"
-//    entry points take it before they call layer 2.
-// 2. The store logic (src/keystore/store.cpp), shared by every backend: everything the ABI
-//    contract fixes independently of where keys live. It resets the last-error text, validates
-//    selectors and labels, runs the per-function state checks in contract order (existence before
-//    type, and so on), chooses the status and records a message for every backend failure.
+//    text, one backend, and optionally an audit log and the approvers of dual control. The mutex
+//    serialises every operation on the handle; the extern "C" entry points take it before they
+//    call layer 2.
+// 2. The store logic (src/keystore/store.cpp, src/keystore/lifecycle.cpp), shared by every
+//    backend: everything the ABI contract fixes independently of where keys live. It resets the
+//    last-error text, validates selectors and labels, runs the per-function state checks in
+//    contract order (existence before type before key state, and so on), chooses the status,
+//    records a message for every backend failure and writes the audit record of every call.
 // 3. The backend (class backend below): only what differs between places where keys can live.
 //    The software backend (src/keystore/software.cpp) keeps keys in memory; a PKCS#11 backend
 //    keeps them in a token. A backend is called only after layer 2 has checked everything the
@@ -81,21 +83,36 @@ private:
   std::size_t size_ = 0;
 };
 
-// What get_info reports, and what layer 2 needs to know about a key before it uses it.
+// The lifecycle state of a key (ABI 2 contract section 3). The values are the ABI's. A key is
+// active when created; rotate makes the old key retired; revoke makes a key revoked.
+enum class key_state : std::uint8_t {
+  active = EKI_KEY_STATE_ACTIVE,
+  retired = EKI_KEY_STATE_RETIRED,
+  revoked = EKI_KEY_STATE_REVOKED,
+};
+
+[[nodiscard]] constexpr eki_key_state to_abi(key_state state) noexcept {
+  return static_cast<eki_key_state>(state);
+}
+
+// What get_info and get_info_v2 report, and what layer 2 needs to know about a key before it uses
+// it.
 struct key_info {
-  key_info(key_alg info_alg, const key_label& info_label) noexcept
-      : alg(info_alg), label(info_label) {}
+  key_info(key_alg info_alg, const key_label& info_label, key_state info_state) noexcept
+      : alg(info_alg), label(info_label), state(info_state) {}
 
   key_alg alg;
   key_label label;
+  key_state state;
 };
 
 // What a backend's find reports about an id. exists: some object carries the id. info: the key's
-// algorithm and label, set exactly when the objects carrying the id form one of the library's key
-// shapes with a valid label. An object that exists without info (a PKCS#11 object another
-// program created: a certificate, a key of another type, a label that breaks the rule) still
-// takes the id: unwrap answers KEY_EXISTS and destroy removes it, while an operation that needs
-// the algorithm or the label answers EKI_ERR_BACKEND.
+// algorithm, label and state, set exactly when the objects carrying the id form one of the
+// library's key shapes with a valid label and, on a token, usage attributes that spell a state. An
+// object that exists without info (a PKCS#11 object another program created: a certificate, a key
+// of another type, a label that breaks the rule) still takes the id: unwrap answers KEY_EXISTS and
+// destroy removes it, while an operation that needs the algorithm or the label answers
+// EKI_ERR_BACKEND.
 struct key_lookup {
   bool exists = false;
   std::optional<key_info> info;
@@ -165,6 +182,18 @@ public:
   // Precondition: some object carries id (it need not be a key the library can represent).
   [[nodiscard]] virtual outcome destroy(const key_id& id) = 0;
 
+  // Moves the key id forward to the state `state`: a field of the stored key (software) or the
+  // usage attributes of the token objects (PKCS#11). Never makes a key more usable: a state
+  // earlier than the key's leaves it unchanged, and on a token only attributes are cleared, the
+  // "protect" group (FALSE from RETIRED on) before the "recover" group. Precondition: id names a
+  // key of the library.
+  [[nodiscard]] virtual outcome set_state(const key_id& id, key_state state) = 0;
+
+  // Compares tag32 with HMAC-SHA256(key id, msg) in constant time: EKI_OK on a match,
+  // EKI_ERR_AUTH_FAILED on a mismatch. msg may be empty with a null data(). Precondition: id names
+  // an HMAC-SHA256 key; tag32 has 32 bytes.
+  [[nodiscard]] virtual outcome hmac_sha256_verify(const key_id& id, bytes msg, bytes tag32) = 0;
+
 protected:
   backend() = default;
 };
@@ -192,13 +221,27 @@ struct pkcs11_config {
 // that is, right after the login.
 [[nodiscard]] outcome make_pkcs11_backend(pkcs11_config config, std::unique_ptr<backend>& out);
 
+// The audit log of a handle (ekicore/audit_log.hpp) and its approvers with their pending destroy
+// requests (ekicore/dual_control.hpp). Declared here only: the handle owns them through pointers
+// and its destructor is defined where they are complete.
+class audit_log;
+class dual_control;
+
 } // namespace ekicore::keystore
 
-// The handle. Allocated by eki_ks_open, freed by eki_ks_close, which must not race with any other
-// call on the same handle.
+// The handle. Allocated by eki_ks_open or eki_ks_open_v2, freed by eki_ks_close, which must not
+// race with any other call on the same handle.
 struct eki_ks {
-  explicit eki_ks(std::unique_ptr<ekicore::keystore::backend> store_backend) noexcept
-      : backend(std::move(store_backend)) {}
+  eki_ks(std::unique_ptr<ekicore::keystore::backend> store_backend,
+         std::unique_ptr<ekicore::keystore::audit_log> store_log,
+         std::unique_ptr<ekicore::keystore::dual_control> store_approvers) noexcept;
+  eki_ks(const eki_ks&) = delete;
+  eki_ks(eki_ks&&) = delete;
+  eki_ks& operator=(const eki_ks&) = delete;
+  eki_ks& operator=(eki_ks&&) = delete;
+  // Closes the backend and the log file; writes nothing (the close record is written by
+  // ekicore::keystore::close).
+  ~eki_ks();
 
   // Serialises every operation on the handle, including eki_ks_last_error_message, which takes a
   // const handle: hence mutable.
@@ -207,15 +250,30 @@ struct eki_ks {
   std::string last_error;
   // Where the keys live; guarded by mutex. Never null.
   std::unique_ptr<ekicore::keystore::backend> backend;
+  // The audit log; null for a handle without one. Guarded by mutex.
+  std::unique_ptr<ekicore::keystore::audit_log> log;
+  // The approvers and pending destroy requests; null for a handle without approvers (single
+  // control). Guarded by mutex.
+  std::unique_ptr<ekicore::keystore::dual_control> approvers;
 };
 
 namespace ekicore::keystore {
 
-// Layer 2. Except for open and copy_message, each function is called with ks.mutex held and
-// after the entry point has checked every pointer parameter; each resets ks.last_error first.
+// Layer 2. Except for open, open_v2, close, audit_verify and copy_message, each function is called
+// with ks.mutex held and after the entry point has checked every pointer parameter; each resets
+// ks.last_error first.
 
-// Validates the backend selector and creates the handle. out is written only on success.
+// eki_ks_open: open_v2 with no audit log and no approvers.
 [[nodiscard]] eki_status open(const eki_ks_config& config, eki_ks*& out);
+
+// Checks the configuration (selector, then the NULL checks of the fields, then their formats, in
+// field order), opens the backend, then the audit log, creates the handle and writes its "open"
+// record. out is written only on success; on failure everything opened is closed again.
+[[nodiscard]] eki_status open_v2(const eki_ks_config_v2& config, eki_ks*& out);
+
+// eki_ks_close: writes the "close" record when the handle has an audit log (a failure cannot be
+// reported and is ignored), then destroys the handle. Accepts NULL.
+void close(eki_ks* ks) noexcept;
 
 // Copies text into buf under the snprintf convention: at most buf.size() - 1 bytes and a NUL,
 // nothing when buf is empty. Returns text.size().
@@ -235,5 +293,20 @@ std::size_t copy_message(std::string_view text, std::span<char> buf) noexcept;
 [[nodiscard]] eki_status unwrap(eki_ks& ks, const key_id& kek, bytes blob, eki_key_alg alg,
                                 const char* label, const key_id& id);
 [[nodiscard]] eki_status destroy(eki_ks& ks, const key_id& id);
+
+// ABI version 2 (src/keystore/lifecycle.cpp).
+[[nodiscard]] eki_status get_info_v2(eki_ks& ks, const key_id& id, eki_key_info_v2& info_out);
+[[nodiscard]] eki_status rotate(eki_ks& ks, const key_id& old_id, eki_key_id& new_id_out);
+[[nodiscard]] eki_status revoke(eki_ks& ks, const key_id& id);
+[[nodiscard]] eki_status hmac_sha256_verify(eki_ks& ks, const key_id& id, bytes msg, bytes tag);
+[[nodiscard]] eki_status destroy_request(eki_ks& ks, const key_id& id, mut_bytes request_out);
+[[nodiscard]] eki_status destroy_approve(eki_ks& ks, bytes request, bytes approver_public_key,
+                                         bytes sig, std::uint32_t& remaining_out);
+[[nodiscard]] eki_status audit_head(eki_ks& ks, mut_bytes hash_out, std::uint64_t& seq_out);
+
+// eki_audit_verify, stateless: the path check (1..=EKI_AUDIT_PATH_MAX_LEN bytes, read no further
+// than one byte past the maximum), then the file. expected_head is empty for NULL, else 32 bytes.
+[[nodiscard]] eki_status audit_verify(const char* path, bytes expected_head,
+                                      std::uint64_t& records_out);
 
 } // namespace ekicore::keystore

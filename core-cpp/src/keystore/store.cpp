@@ -1,8 +1,17 @@
 // Layer 2 of the key store: the logic that every backend shares. Each operation follows the
-// per-function sequence of the ABI contract (plan 4.2): selector and format checks first, then
-// the store state checks in their fixed order, and only then the backend operation. Statuses that
-// follow from caller input or store state are decided here and never by a backend.
+// per-function sequence of the ABI contract (plan 4.2, ABI 2 contract section 3): selector and
+// format checks first, then the store state checks in their fixed order (existence, type, key
+// state), and only then the backend operation. Statuses that follow from caller input or store
+// state are decided here and never by a backend. Every logged operation runs in run_logged, which
+// writes its audit record and undoes its changes when it does not succeed (finish below).
+//
+// This file holds the shared pieces and the ABI version 1 operations; open.cpp opens and closes
+// handles, lifecycle.cpp holds the operations ABI version 2 adds.
 
+#include "store_internal.hpp"
+
+#include <ekicore/audit_log.hpp>
+#include <ekicore/dual_control.hpp>
 #include <ekicore/keystore.hpp>
 #include <ekicore/openssl_raii.hpp>
 
@@ -20,6 +29,14 @@
 #include <string_view>
 #include <utility>
 
+eki_ks::eki_ks(std::unique_ptr<ekicore::keystore::backend> store_backend,
+               std::unique_ptr<ekicore::keystore::audit_log> store_log,
+               std::unique_ptr<ekicore::keystore::dual_control> store_approvers) noexcept
+    : backend(std::move(store_backend)), log(std::move(store_log)),
+      approvers(std::move(store_approvers)) {}
+
+eki_ks::~eki_ks() = default;
+
 namespace ekicore::keystore {
 
 std::optional<key_alg> parse_key_alg(eki_key_alg alg) noexcept {
@@ -35,32 +52,8 @@ std::optional<key_alg> parse_key_alg(eki_key_alg alg) noexcept {
   }
 }
 
-namespace {
-
-// The length of the NUL-terminated text, found by reading at most max_len + 1 bytes, or nullopt
-// when no NUL is among them (the text is longer than max_len).
-std::optional<std::size_t> bounded_length(const char* text, std::size_t max_len) noexcept {
-  for (std::size_t len = 0; len <= max_len; ++len) {
-    if (text[len] == '\0') {
-      return len;
-    }
-  }
-  return std::nullopt;
-}
-
-// Whether every byte is printable ASCII (0x20..0x7E). The comparison is on the byte value, so it
-// holds whether char is signed or not.
-bool printable(std::span<const char> text) noexcept {
-  return std::ranges::all_of(text, [](char c) {
-    const auto byte = static_cast<unsigned char>(c);
-    return byte >= 0x20 && byte <= 0x7E;
-  });
-}
-
-} // namespace
-
 std::optional<key_label> key_label::parse(const char* text) noexcept {
-  const std::optional<std::size_t> len = bounded_length(text, EKI_LABEL_MAX_LEN);
+  const std::optional<std::size_t> len = detail::bounded_length(text, EKI_LABEL_MAX_LEN);
   if (!len.has_value()) {
     return std::nullopt;
   }
@@ -68,7 +61,7 @@ std::optional<key_label> key_label::parse(const char* text) noexcept {
 }
 
 std::optional<key_label> key_label::from_bytes(std::span<const char> text) noexcept {
-  if (text.empty() || text.size() > EKI_LABEL_MAX_LEN || !printable(text)) {
+  if (text.empty() || text.size() > EKI_LABEL_MAX_LEN || !detail::printable(text)) {
     return std::nullopt;
   }
   key_label label;
@@ -105,20 +98,25 @@ eki_status null_pointer(eki_ks& ks) noexcept {
   return EKI_ERR_NULL_POINTER;
 }
 
-namespace {
+namespace detail {
 
-// The frame of every store operation: the last-error text is reset on entry, and the entries
-// that the operation pushes onto OpenSSL's error queue are confined to it as for a primitive
-// (kept for EKI_ERR_BACKEND, whose reason they carry, removed otherwise). The caller's entries
-// are never touched.
-template <typename Operation> eki_status run(eki_ks& ks, const Operation& operation) {
-  ks.last_error.clear();
-  ossl::error_scope errors;
-  return errors.settle(operation());
+std::optional<std::size_t> bounded_length(const char* text, std::size_t max_len) noexcept {
+  for (std::size_t len = 0; len <= max_len; ++len) {
+    if (text[len] == '\0') {
+      return len;
+    }
+  }
+  return std::nullopt;
 }
 
-// The status of a backend outcome. A failure's detail becomes the last-error text; an
-// EKI_ERR_BACKEND failure always leaves text, even from a backend that gave none.
+// The comparison is on the byte value, so it holds whether char is signed or not.
+bool printable(std::span<const char> text) noexcept {
+  return std::ranges::all_of(text, [](char c) {
+    const auto byte = static_cast<unsigned char>(c);
+    return byte >= 0x20 && byte <= 0x7E;
+  });
+}
+
 eki_status record(eki_ks& ks, outcome result) {
   if (result.status == EKI_ERR_BACKEND && result.detail.empty()) {
     result.detail = "key store backend failed without a reason";
@@ -129,7 +127,6 @@ eki_status record(eki_ks& ks, outcome result) {
   return result.status;
 }
 
-// Whether some object carries id (EKI_OK with exists set), or the backend's failure.
 eki_status id_taken(eki_ks& ks, const key_id& id, bool& exists) {
   key_lookup found;
   const eki_status status = record(ks, ks.backend->find(id, found));
@@ -137,9 +134,6 @@ eki_status id_taken(eki_ks& ks, const key_id& id, bool& exists) {
   return status;
 }
 
-// The key that id names. When there is none the result is nullopt and status says why:
-// EKI_ERR_KEY_NOT_FOUND when no object carries id; EKI_ERR_BACKEND when the objects that carry it
-// are not a key the library can represent (a foreign object, plan 4.3); or the backend's failure.
 std::optional<key_info> find_existing(eki_ks& ks, const key_id& id, eki_status& status) {
   key_lookup found;
   status = record(ks, ks.backend->find(id, found));
@@ -152,29 +146,36 @@ std::optional<key_info> find_existing(eki_ks& ks, const key_id& id, eki_status& 
     status = record(ks, outcome{
                             .status = EKI_ERR_BACKEND,
                             .detail = "the objects that carry this key id are not a key of a "
-                                      "type and label this library can use",
+                                      "type, label and state this library can use",
                         });
   }
   return found.info;
 }
 
-// The key id exists and has algorithm `wanted`: KEY_NOT_FOUND, then WRONG_KEY_TYPE.
-eki_status require_key(eki_ks& ks, const key_id& id, key_alg wanted) {
+eki_status require_state(key_state state, key_use use) noexcept {
+  switch (state) {
+  case key_state::active:
+    return EKI_OK;
+  case key_state::retired:
+    return use == key_use::recover ? EKI_OK : EKI_ERR_KEY_STATE;
+  case key_state::revoked:
+    break;
+  }
+  return EKI_ERR_KEY_STATE;
+}
+
+eki_status require_key(eki_ks& ks, const key_id& id, key_alg wanted, key_use use) {
   eki_status status = EKI_OK;
   const std::optional<key_info> found = find_existing(ks, id, status);
   if (!found.has_value()) {
     return status;
   }
-  return found->alg == wanted ? EKI_OK : EKI_ERR_WRONG_KEY_TYPE;
+  if (found->alg != wanted) {
+    return EKI_ERR_WRONG_KEY_TYPE;
+  }
+  return require_state(found->state, use);
 }
 
-// Whether a key of this algorithm can be wrapped: the 32-byte secrets can, a key pair cannot.
-bool is_wrappable(key_alg alg) noexcept {
-  return alg == key_alg::aes_256 || alg == key_alg::hmac_sha256;
-}
-
-// A fresh id for generate: 16 bytes from OpenSSL's RNG. An id that some key already carries
-// would mean a broken RNG; it is reported as a backend failure rather than overwriting the key.
 eki_status new_key_id(eki_ks& ks, key_id& id) {
   if (RAND_bytes(id.data(), static_cast<int>(id.size())) != 1) {
     return record(ks, openssl_failure("RAND_bytes for a key id"));
@@ -191,43 +192,96 @@ eki_status new_key_id(eki_ks& ks, key_id& id) {
   return EKI_OK;
 }
 
-// The PKCS#11 part of eki_ks_open, after the selector check: validation steps 2 and 3 for the
-// configuration fields, then the backend. Without EKI_WITH_PKCS11 the selector names a backend
-// that is not compiled in, which step 2 answers with EKI_ERR_UNSUPPORTED before any field is
-// looked at. With it, the three fields are checked for NULL in field order before any format
-// check, so a NULL field wins over a malformed other field; then the token label (1..=32
-// printable bytes) and the PIN (1..=255 bytes), each read no further than one byte past its
-// maximum. Every failure after that is EKI_ERR_BACKEND, reported as a status only: there is no
-// handle to carry a message.
-eki_status open_pkcs11([[maybe_unused]] const eki_ks_config& config,
-                       [[maybe_unused]] std::unique_ptr<backend>& out) {
-#ifdef EKI_WITH_PKCS11
-  if (config.pkcs11_module_path == nullptr || config.pkcs11_token_label == nullptr ||
-      config.pkcs11_user_pin == nullptr) {
-    return EKI_ERR_NULL_POINTER;
+namespace {
+
+// Appends "; <what>" to text.
+void append_clause(std::string& text, std::string_view what) {
+  text += text.empty() ? "" : "; ";
+  text += what;
+}
+
+// Undoes the changes registered in current, most recent first: the pending request is put back,
+// the created key is destroyed again. A state change and a destroy cannot be undone and are named
+// as such. Returns what was done, as text for the last-error message, and sets failed when an
+// undo step failed.
+std::string undo(eki_ks& ks, const call& current, bool& failed) {
+  std::string done;
+  failed = false;
+  if (current.request.has_value() && ks.approvers) {
+    ks.approvers->restore(current.request->id, current.request->before);
+    append_clause(done, "the pending destroy request was put back");
   }
-  const std::optional<std::size_t> label_len =
-      bounded_length(config.pkcs11_token_label, pkcs11_token_label_max_len);
-  if (!label_len.has_value() || *label_len == 0 ||
-      !printable({config.pkcs11_token_label, *label_len})) {
-    return EKI_ERR_INVALID_ARGUMENT;
+  if (current.changed.has_value()) {
+    append_clause(done, current.changed->after == key_state::retired
+                            ? "the key stays RETIRED, which cannot be undone"
+                            : "the key stays REVOKED, which cannot be undone");
   }
-  const std::optional<std::size_t> pin_len =
-      bounded_length(config.pkcs11_user_pin, pkcs11_user_pin_max_len);
-  if (!pin_len.has_value() || *pin_len == 0) {
-    return EKI_ERR_INVALID_ARGUMENT;
+  if (current.created.has_value()) {
+    const outcome destroyed = ks.backend->destroy(*current.created);
+    failed = failed || destroyed.status != EKI_OK;
+    append_clause(done, destroyed.status == EKI_OK
+                            ? "the key this call created was destroyed again"
+                            : "destroying the key this call created failed: " + destroyed.detail);
   }
-  // The library keeps no caller pointer: the strings are copied, the PIN into a secret_buffer.
-  pkcs11_config copied{
-      .module_path = config.pkcs11_module_path,
-      .token_label = std::string{config.pkcs11_token_label, *label_len},
-      .user_pin = secret_buffer::copy_of(
-          bytes{reinterpret_cast<const std::uint8_t*>(config.pkcs11_user_pin), *pin_len}),
-  };
-  return make_pkcs11_backend(std::move(copied), out).status;
-#else
-  return EKI_ERR_UNSUPPORTED;
-#endif
+  if (current.destroyed) {
+    append_clause(done, "the key was destroyed, which cannot be undone");
+  }
+  return done;
+}
+
+// Undoes the changes of an operation that failed. Its own last-error text stays; a failed undo
+// step makes the call a backend failure and adds its reason.
+eki_status undo_failed_call(eki_ks& ks, const call& current, eki_status status) {
+  bool failed = false;
+  const std::string done = undo(ks, current, failed);
+  if (!failed) {
+    return status;
+  }
+  append_clause(ks.last_error, done);
+  return EKI_ERR_BACKEND;
+}
+
+} // namespace
+
+eki_status finish(eki_ks& ks, call& current, eki_status status) {
+  if (status != EKI_OK) {
+    status = undo_failed_call(ks, current, status);
+  }
+  if (!ks.log) {
+    return status;
+  }
+  current.record.status = status;
+  const outcome written = ks.log->append(current.record);
+  if (written.status == EKI_OK) {
+    return status;
+  }
+  std::string text = "the audit record could not be written: " + written.detail;
+  if (status == EKI_OK) {
+    bool failed = false;
+    append_clause(text, undo(ks, current, failed));
+  }
+  ks.last_error = std::move(text);
+  return EKI_ERR_BACKEND;
+}
+
+} // namespace detail
+
+namespace {
+
+using detail::call;
+using detail::find_existing;
+using detail::id_taken;
+using detail::key_use;
+using detail::new_key_id;
+using detail::record;
+using detail::require_key;
+using detail::require_state;
+using detail::run;
+using detail::run_logged;
+
+// Whether a key of this algorithm can be wrapped: the 32-byte secrets can, a key pair cannot.
+bool is_wrappable(key_alg alg) noexcept {
+  return alg == key_alg::aes_256 || alg == key_alg::hmac_sha256;
 }
 
 // Fills info_out: the algorithm, and the label NUL-padded through byte 64.
@@ -240,33 +294,9 @@ void write_info(const key_info& info, eki_key_info& info_out) noexcept {
 
 } // namespace
 
-eki_status open(const eki_ks_config& config, eki_ks*& out) {
-  std::unique_ptr<backend> store_backend;
-  switch (config.backend) {
-  case EKI_KS_SOFTWARE:
-    // The software backend ignores the PKCS#11 fields of the configuration.
-    store_backend = make_software_backend();
-    break;
-  case EKI_KS_PKCS11: {
-    // A module that uses the same libcrypto as this library may push entries onto the caller's
-    // error queue while it initialises and logs in; they are confined to this call.
-    ossl::error_scope errors;
-    const eki_status status = errors.settle(open_pkcs11(config, store_backend));
-    if (status != EKI_OK) {
-      return status;
-    }
-    break;
-  }
-  default:
-    return EKI_ERR_INVALID_ARGUMENT;
-  }
-  auto handle = std::make_unique<eki_ks>(std::move(store_backend));
-  out = handle.release();
-  return EKI_OK;
-}
-
+// Audit record: key is the new id, or empty when no key was created.
 eki_status generate(eki_ks& ks, eki_key_alg alg, const char* label, eki_key_id& id_out) {
-  return run(ks, [&] {
+  return run_logged(ks, audit::op::generate, [&](call& current) {
     const std::optional<key_alg> parsed_alg = parse_key_alg(alg);
     if (!parsed_alg.has_value()) {
       return EKI_ERR_INVALID_ARGUMENT;
@@ -281,10 +311,13 @@ eki_status generate(eki_ks& ks, eki_key_alg alg, const char* label, eki_key_id& 
       return status;
     }
     status = record(ks, ks.backend->create(*parsed_alg, *parsed_label, id));
-    if (status == EKI_OK) {
-      std::ranges::copy(id, std::begin(id_out.bytes));
+    if (status != EKI_OK) {
+      return status;
     }
-    return status;
+    current.created = id;
+    current.record.key = id;
+    std::ranges::copy(id, std::begin(id_out.bytes));
+    return EKI_OK;
   });
 }
 
@@ -300,9 +333,11 @@ eki_status get_info(eki_ks& ks, const key_id& id, eki_key_info& info_out) {
   });
 }
 
+// Contract order: exists, is ECDSA P-256, not REVOKED.
 eki_status get_public_key(eki_ks& ks, const key_id& id, mut_bytes out65) {
-  return run(ks, [&] {
-    const eki_status status = require_key(ks, id, key_alg::ecdsa_p256);
+  return run_logged(ks, audit::op::get_public_key, [&](call& current) {
+    current.record.key = id;
+    const eki_status status = require_key(ks, id, key_alg::ecdsa_p256, key_use::recover);
     if (status != EKI_OK) {
       return status;
     }
@@ -310,9 +345,11 @@ eki_status get_public_key(eki_ks& ks, const key_id& id, mut_bytes out65) {
   });
 }
 
+// Contract order: exists, is ECDSA P-256, ACTIVE.
 eki_status sign(eki_ks& ks, const key_id& id, bytes msg, mut_bytes sig64) {
-  return run(ks, [&] {
-    const eki_status status = require_key(ks, id, key_alg::ecdsa_p256);
+  return run_logged(ks, audit::op::sign, [&](call& current) {
+    current.record.key = id;
+    const eki_status status = require_key(ks, id, key_alg::ecdsa_p256, key_use::protect);
     if (status != EKI_OK) {
       return status;
     }
@@ -320,9 +357,11 @@ eki_status sign(eki_ks& ks, const key_id& id, bytes msg, mut_bytes sig64) {
   });
 }
 
+// Contract order: exists, is HMAC-SHA256, ACTIVE.
 eki_status hmac_sha256(eki_ks& ks, const key_id& id, bytes msg, mut_bytes out32) {
-  return run(ks, [&] {
-    const eki_status status = require_key(ks, id, key_alg::hmac_sha256);
+  return run_logged(ks, audit::op::hmac, [&](call& current) {
+    current.record.key = id;
+    const eki_status status = require_key(ks, id, key_alg::hmac_sha256, key_use::protect);
     if (status != EKI_OK) {
       return status;
     }
@@ -330,9 +369,12 @@ eki_status hmac_sha256(eki_ks& ks, const key_id& id, bytes msg, mut_bytes out32)
   });
 }
 
-// Contract order: kek exists, key exists, kek is AES-256, key is AES-256 or HMAC-SHA256.
+// Contract order: kek exists, key exists, kek is AES-256, key is AES-256 or HMAC-SHA256, kek
+// ACTIVE, key not REVOKED. Audit record: key is the key wrapped, key2 the kek.
 eki_status wrap(eki_ks& ks, const key_id& kek, const key_id& key, mut_bytes out40) {
-  return run(ks, [&] {
+  return run_logged(ks, audit::op::wrap, [&](call& current) {
+    current.record.key = key;
+    current.record.key2 = kek;
     eki_status status = EKI_OK;
     const std::optional<key_info> kek_found = find_existing(ks, kek, status);
     if (!kek_found.has_value()) {
@@ -345,15 +387,26 @@ eki_status wrap(eki_ks& ks, const key_id& kek, const key_id& key, mut_bytes out4
     if (kek_found->alg != key_alg::aes_256 || !is_wrappable(key_found->alg)) {
       return EKI_ERR_WRONG_KEY_TYPE;
     }
+    status = require_state(kek_found->state, key_use::protect);
+    if (status != EKI_OK) {
+      return status;
+    }
+    status = require_state(key_found->state, key_use::recover);
+    if (status != EKI_OK) {
+      return status;
+    }
     return record(ks, ks.backend->wrap(kek, key, out40));
   });
 }
 
 // Contract order: alg known, blob_len 40, alg not ECDSA, label format; kek exists, kek is
-// AES-256, id free; then the integrity check, which the backend performs.
+// AES-256, kek not REVOKED, id free; then the integrity check, which the backend performs. Audit
+// record: key is the id given, key2 the kek, whatever the outcome.
 eki_status unwrap(eki_ks& ks, const key_id& kek, bytes blob, eki_key_alg alg, const char* label,
                   const key_id& id) {
-  return run(ks, [&] {
+  return run_logged(ks, audit::op::unwrap, [&](call& current) {
+    current.record.key = id;
+    current.record.key2 = kek;
     const std::optional<key_alg> parsed_alg = parse_key_alg(alg);
     if (!parsed_alg.has_value()) {
       return EKI_ERR_INVALID_ARGUMENT;
@@ -368,7 +421,7 @@ eki_status unwrap(eki_ks& ks, const key_id& kek, bytes blob, eki_key_alg alg, co
     if (!parsed_label.has_value()) {
       return EKI_ERR_INVALID_ARGUMENT;
     }
-    eki_status status = require_key(ks, kek, key_alg::aes_256);
+    eki_status status = require_key(ks, kek, key_alg::aes_256, key_use::recover);
     if (status != EKI_OK) {
       return status;
     }
@@ -380,22 +433,33 @@ eki_status unwrap(eki_ks& ks, const key_id& kek, bytes blob, eki_key_alg alg, co
     if (taken) {
       return EKI_ERR_KEY_EXISTS;
     }
-    return record(ks, ks.backend->unwrap(kek, blob, *parsed_alg, *parsed_label, id));
+    status = record(ks, ks.backend->unwrap(kek, blob, *parsed_alg, *parsed_label, id));
+    if (status == EKI_OK) {
+      current.created = id;
+    }
+    return status;
   });
 }
 
+// Any object that carries the id can be destroyed, a foreign one included (plan 4.3). A handle
+// with approvers destroys only through destroy_approve: an existing key is APPROVAL_REQUIRED.
 eki_status destroy(eki_ks& ks, const key_id& id) {
-  return run(ks, [&] {
-    // Any object that carries the id can be destroyed, a foreign one included (plan 4.3).
+  return run_logged(ks, audit::op::destroy, [&](call& current) {
+    current.record.key = id;
     bool exists = false;
-    const eki_status status = id_taken(ks, id, exists);
+    eki_status status = id_taken(ks, id, exists);
     if (status != EKI_OK) {
       return status;
     }
     if (!exists) {
       return EKI_ERR_KEY_NOT_FOUND;
     }
-    return record(ks, ks.backend->destroy(id));
+    if (ks.approvers) {
+      return EKI_ERR_APPROVAL_REQUIRED;
+    }
+    status = record(ks, ks.backend->destroy(id));
+    current.destroyed = status == EKI_OK;
+    return status;
   });
 }
 

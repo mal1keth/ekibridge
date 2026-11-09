@@ -7,6 +7,11 @@
 // carry an id but form none of these shapes, or whose CKA_LABEL is not a valid label, were made by
 // another program; they still take the id (plan 4.3, amended).
 //
+// The lifecycle state of a key is the set of its usage attributes (ABI 2 contract section 3): the
+// token itself refuses what the state forbids, and every library and process that uses the token
+// sees the same state. A combination of usage attributes that spells no state makes the objects
+// foreign like a broken shape.
+//
 // Every operation looks its objects up again by id: object handles are not kept between calls,
 // since another session or process may destroy or replace the objects in between.
 
@@ -124,6 +129,54 @@ std::vector<CK_ATTRIBUTE> secret_key_template(key_alg alg, const key_label& labe
   return attributes;
 }
 
+// One usage attribute of the state table (ABI 2 contract section 3): the object it sits on and its
+// value in each state, in the order ACTIVE, RETIRED, REVOKED.
+struct usage_flag {
+  // On the public key of a key pair; otherwise on the secret key or the private key.
+  bool on_public_key;
+  CK_ATTRIBUTE_TYPE type;
+  std::array<CK_BBOOL, 3> values;
+};
+
+constexpr std::array<usage_flag, 4> aes_flags{
+    usage_flag{.on_public_key = false, .type = CKA_WRAP, .values = {yes, no, no}},
+    usage_flag{.on_public_key = false, .type = CKA_ENCRYPT, .values = {yes, no, no}},
+    usage_flag{.on_public_key = false, .type = CKA_UNWRAP, .values = {yes, yes, no}},
+    usage_flag{.on_public_key = false, .type = CKA_DECRYPT, .values = {yes, yes, no}},
+};
+constexpr std::array<usage_flag, 2> hmac_flags{
+    usage_flag{.on_public_key = false, .type = CKA_SIGN, .values = {yes, no, no}},
+    usage_flag{.on_public_key = false, .type = CKA_VERIFY, .values = {yes, yes, no}},
+};
+constexpr std::array<usage_flag, 2> ecdsa_flags{
+    usage_flag{.on_public_key = false, .type = CKA_SIGN, .values = {yes, no, no}},
+    usage_flag{.on_public_key = true, .type = CKA_VERIFY, .values = {yes, yes, no}},
+};
+
+constexpr std::array<key_state, 3> all_states{
+    key_state::active,
+    key_state::retired,
+    key_state::revoked,
+};
+
+// The usage attributes that spell the state of a key of alg.
+std::span<const usage_flag> usage_flags(key_alg alg) noexcept {
+  switch (alg) {
+  case key_alg::aes_256:
+    return aes_flags;
+  case key_alg::hmac_sha256:
+    return hmac_flags;
+  case key_alg::ecdsa_p256:
+    break;
+  }
+  return ecdsa_flags;
+}
+
+// The column of state in usage_flag::values.
+std::size_t state_column(key_state state) noexcept {
+  return static_cast<std::size_t>(state) - static_cast<std::size_t>(key_state::active);
+}
+
 // A read-write session, closed on destruction. Closing never logs out: login state belongs to the
 // whole application, and C_Logout would log out every other handle on the token (plan 4.3).
 class session {
@@ -198,11 +251,14 @@ private:
 struct located {
   // Every object that carries the id, of any class.
   std::vector<CK_OBJECT_HANDLE> objects;
-  // Set when the objects form one of the library's key shapes with a valid label.
+  // Set when the objects form one of the library's key shapes with a valid label, whatever their
+  // usage attributes.
+  std::optional<key_alg> shape;
+  // Set when, in addition, the usage attributes spell a state.
   std::optional<key_info> info;
-  // The secret key, or the private key of a key pair; valid when info is set.
+  // The secret key, or the private key of a key pair; valid when shape is set.
   CK_OBJECT_HANDLE key = CK_INVALID_HANDLE;
-  // The public key of a key pair; valid when info names ECDSA P-256.
+  // The public key of a key pair; valid when shape is ECDSA P-256.
   CK_OBJECT_HANDLE public_key = CK_INVALID_HANDLE;
 };
 
@@ -382,6 +438,59 @@ public:
     return {};
   }
 
+  // Only clears attributes, never sets one: the token itself lets a cleared usage attribute be
+  // set back to TRUE (SoftHSM2 2.7.0), so this is what keeps a key from moving back. The
+  // "protect" group (the attributes FALSE from RETIRED on) is cleared first, then the "recover"
+  // group; within a group the secret or private key before the public key. A change that stops
+  // halfway thus leaves the key RETIRED or foreign, never more usable than before.
+  outcome set_state(const key_id& id, key_state state) override {
+    located objects;
+    outcome result = locate(id, objects);
+    if (result.status != EKI_OK) {
+      return result;
+    }
+    if (!objects.shape.has_value()) {
+      return precondition_broken();
+    }
+    const std::span<const usage_flag> flags = usage_flags(*objects.shape);
+    for (const bool protect_group : {true, false}) {
+      for (const bool on_public_key : {false, true}) {
+        const CK_OBJECT_HANDLE object = on_public_key ? objects.public_key : objects.key;
+        const flag_selection selection{
+            .protect_group = protect_group,
+            .on_public_key = on_public_key,
+            .state = state,
+        };
+        result = clear_flags(object, flags, selection);
+        if (result.status != EKI_OK) {
+          return result;
+        }
+      }
+    }
+    return {};
+  }
+
+  // C_Verify ends the operation whatever it returns, CKR_SIGNATURE_INVALID and
+  // CKR_SIGNATURE_LEN_RANGE included (checked on SoftHSM2 2.7.0).
+  outcome hmac_sha256_verify(const key_id& id, bytes msg, bytes tag32) override {
+    located objects;
+    outcome result = locate_key(id, key_alg::hmac_sha256, objects);
+    if (result.status != EKI_OK) {
+      return result;
+    }
+    CK_MECHANISM verify_mechanism = mechanism(CKM_SHA256_HMAC);
+    CK_RV rv = functions()->C_VerifyInit(session_.handle(), &verify_mechanism, objects.key);
+    if (rv != CKR_OK) {
+      return failure("C_VerifyInit", rv);
+    }
+    rv = functions()->C_Verify(session_.handle(), input(msg), msg.size(), input(tag32),
+                               tag32.size());
+    if (rv == CKR_SIGNATURE_INVALID || rv == CKR_SIGNATURE_LEN_RANGE) {
+      return outcome{.status = EKI_ERR_AUTH_FAILED, .detail = {}};
+    }
+    return rv == CKR_OK ? outcome{} : failure("C_Verify", rv);
+  }
+
 private:
   [[nodiscard]] CK_FUNCTION_LIST* functions() const noexcept {
     return lease_.functions();
@@ -491,8 +600,91 @@ private:
     if (result.status != EKI_OK || !label.has_value()) {
       return result;
     }
-    objects.info.emplace(*alg, *label);
+    objects.shape = *alg;
+    std::optional<key_state> state;
+    result = read_state(objects, *alg, state);
+    if (result.status != EKI_OK || !state.has_value()) {
+      return result;
+    }
+    objects.info.emplace(*alg, *label, *state);
     return {};
+  }
+
+  // The state that the usage attributes of the located key spell, or nullopt when an attribute is
+  // missing or the combination is none of the table's rows. A CK_BBOOL other than CK_FALSE counts
+  // as TRUE.
+  outcome read_state(const located& objects, key_alg alg, std::optional<key_state>& state) {
+    state.reset();
+    const std::span<const usage_flag> flags = usage_flags(alg);
+    std::array<bool, aes_flags.size()> values{};
+    auto* value_out = values.begin();
+    for (const usage_flag& flag : flags) {
+      std::optional<bool> value;
+      outcome result =
+          read_flag(flag.on_public_key ? objects.public_key : objects.key, flag.type, value);
+      if (result.status != EKI_OK || !value.has_value()) {
+        return result;
+      }
+      *value_out++ = *value;
+    }
+    const std::span<const bool> read{values.begin(), flags.size()};
+    for (const key_state candidate : all_states) {
+      const std::size_t column = state_column(candidate);
+      const bool matches =
+          std::ranges::equal(flags, read, [column](const usage_flag& flag, bool value) {
+            return value == (flag.values.at(column) != CK_FALSE);
+          });
+      if (matches) {
+        state = candidate;
+        return {};
+      }
+    }
+    return {};
+  }
+
+  // Reads a CK_BBOOL attribute; nullopt as for read_attribute, and also when the value is not one
+  // byte long.
+  outcome read_flag(CK_OBJECT_HANDLE object, CK_ATTRIBUTE_TYPE type, std::optional<bool>& value) {
+    value.reset();
+    std::array<CK_BYTE, sizeof(CK_BBOOL)> raw{};
+    std::optional<std::size_t> length;
+    outcome read = read_attribute(object, type, raw, length);
+    if (read.status == EKI_OK && length == raw.size()) {
+      value = raw.front() != CK_FALSE;
+    }
+    return read;
+  }
+
+  // Which usage attributes one C_SetAttributeValue call clears.
+  struct flag_selection {
+    // The "protect" group (FALSE from RETIRED on), or the "recover" group (FALSE in REVOKED).
+    bool protect_group;
+    // The attributes on the public key of a key pair, or those on the other object.
+    bool on_public_key;
+    // The state whose FALSE attributes are cleared.
+    key_state state;
+  };
+
+  // Sets to CK_FALSE, with one C_SetAttributeValue call, the selected attributes that are FALSE in
+  // the selected state. Nothing is called when there are none.
+  outcome clear_flags(CK_OBJECT_HANDLE object, std::span<const usage_flag> flags,
+                      const flag_selection& selection) {
+    const std::size_t column = state_column(selection.state);
+    const std::size_t retired = state_column(key_state::retired);
+    std::vector<CK_ATTRIBUTE> attributes;
+    for (const usage_flag& flag : flags) {
+      const bool in_protect_group = flag.values.at(retired) == CK_FALSE;
+      if (in_protect_group == selection.protect_group &&
+          flag.on_public_key == selection.on_public_key && flag.values.at(column) == CK_FALSE) {
+        attributes.push_back(attribute(flag.type, flag.values.at(column)));
+      }
+    }
+    if (attributes.empty()) {
+      return {};
+    }
+    const CK_RV rv = functions()->C_SetAttributeValue(session_.handle(), object, attributes.data(),
+                                                      attributes.size());
+    return rv == CKR_OK ? outcome{} : failure("C_SetAttributeValue", rv);
   }
 
   // The shapes the library creates: one secret key of type AES or GENERIC_SECRET, or one private
