@@ -15,12 +15,10 @@
 //! module; without it they answer `EKI_ERR_UNSUPPORTED`, and `barrier` zero-fills their outputs
 //! as for any other error.
 //!
-//! The nine functions ABI version 2 adds (key lifecycle, audit log, dual control of destroy,
-//! from `eki_ks_open_v2` to `eki_audit_verify`) are declared with their final signatures and
-//! check their pointer parameters in parameter order, but do nothing else yet: after the NULL
-//! checks they answer `EKI_ERR_UNSUPPORTED`, and `barrier` zero-fills their outputs. The store
-//! functions among them take the handle's lock and reset its last-error message first, as every
-//! store call does. `eki_ks_open_v2` reads none of its configuration fields yet.
+//! Every function of ABI version 2 is implemented as well: key lifecycle states for both
+//! backends, the audit log and dual control of destroy. `eki_ks_open` and `eki_ks_open_v2` share
+//! one body (`open_handle`); `eki_ks_open` passes a configuration with no audit log and no
+//! approvers.
 //!
 //! # Caller contract
 //!
@@ -744,6 +742,135 @@ impl PointerParam for PathIn {
     }
 }
 
+impl<const SCAN: usize> TextIn<SCAN> {
+    /// The text of a string parameter that may be NULL because the contract gives NULL a
+    /// meaning (`audit_log_path` of an `eki_ks_config_v2`: no audit log): `None` for NULL,
+    /// otherwise the bytes before the NUL, read as by `bytes`.
+    fn optional_bytes(&self) -> Result<Option<&[u8]>, Error> {
+        if self.ptr.is_null() {
+            return Ok(None);
+        }
+        self.bytes().map(Some)
+    }
+}
+
+/// The approver keys of an `eki_ks_config_v2`: `approver_public_keys` and `approver_count`.
+///
+/// The count decides how many bytes the pointer stands for, and the contract (C4) vouches for
+/// the pointer only when the count is valid, 2 to `EKI_APPROVERS_MAX`. So `bytes` checks the
+/// count before it creates a slice, and with a count of 0 it reads nothing.
+struct ApproverKeysIn {
+    ptr: *const u8,
+    count: usize,
+}
+
+impl ApproverKeysIn {
+    /// Wraps the approver key array `ptr` of `count` keys.
+    ///
+    /// # Safety
+    ///
+    /// If `count` is 2 to `EKI_APPROVERS_MAX`: `ptr` is NULL or valid for reads of
+    /// `count * 65` bytes within one allocation that nothing writes, for as long as the
+    /// returned value exists. For any other count nothing is required of `ptr`, which is then
+    /// never dereferenced.
+    unsafe fn new(ptr: *const u8, count: usize) -> Self {
+        Self { ptr, count }
+    }
+
+    /// The keys, 65 bytes each, back to back: `None` for a count of 0, `INVALID_ARGUMENT` for a
+    /// count outside 0 and 2 to `EKI_APPROVERS_MAX`, `NULL_POINTER` for a NULL array with a
+    /// count that is not 0. The slice is created only for a valid count.
+    fn bytes(&self) -> Result<Option<&[u8]>, Error> {
+        self.non_null()?;
+        let Some(count) = keystore::dual::approver_count(self.count)? else {
+            return Ok(None);
+        };
+        // `count` is at most 8, so the product is at most 520 and cannot overflow.
+        let len = count * EKI_P256_PUBLIC_KEY_LEN;
+        // SAFETY: `ptr` is non-NULL (`non_null` above, as the count is not 0) and the count is
+        // 2 to `EKI_APPROVERS_MAX` (`approver_count` above), so by the precondition of
+        // `ApproverKeysIn::new` (from C4, C1 and C2) it is valid for reads of `len` bytes of one
+        // allocation with no concurrent writer. `u8` has alignment 1. The slice borrows `self`, a
+        // local of the extern call, so it ends before the call returns.
+        Ok(Some(unsafe { core::slice::from_raw_parts(self.ptr, len) }))
+    }
+}
+
+impl PointerParam for ApproverKeysIn {
+    /// The pair rule: a count that is not 0 needs a pointer, whether or not the count is valid
+    /// (NULL checks of the fields come before their format checks).
+    fn non_null(&self) -> Result<(), Error> {
+        pair_non_null(self.ptr.is_null(), self.count)
+    }
+}
+
+/// The value of a fixed-size input as an array. `Input::fixed` makes `bytes` exactly `N` bytes
+/// long, so the conversion cannot fail; a failure would be a broken invariant.
+fn array<const N: usize>(bytes: &[u8]) -> Result<&[u8; N], Error> {
+    bytes.try_into().map_err(|_| Error::Internal)
+}
+
+/// The body `eki_ks_open` and `eki_ks_open_v2` share, after the NULL checks of `config` and
+/// `out`: the selector; the NULL checks of the PKCS#11 fields (PKCS#11 only) and of the approver
+/// keys; the format checks in field order (PKCS#11 fields, audit log path, approver count, the
+/// keys); then the backend, the audit log and the `open` record (`keystore::open`).
+fn open_handle(config: &eki_ks_config_v2) -> Result<Handle, Error> {
+    let selected = keystore::select(config.backend)?;
+    let (keys, count) = (config.approver_public_keys, config.approver_count);
+    // SAFETY: the caller guarantees C4 for `approver_public_keys` and `approver_count` (C1 for
+    // `approver_count * 65` bytes when the count is 2 to 8, nothing for another count), the
+    // precondition of `ApproverKeysIn::new`; `eki_ks_open` passes NULL and 0, which require
+    // nothing. The values are the caller's own, copied out of its configuration. The wrapper is
+    // a local of this call, so it does not outlive that guarantee.
+    let approvers = unsafe { ApproverKeysIn::new(keys, count) };
+    let backend = match selected {
+        keystore::Selected::Software => {
+            check_null(&[&approvers])?;
+            keystore::BackendConfig::Software
+        }
+        keystore::Selected::Pkcs11 => {
+            // SAFETY: the configuration selects the PKCS#11 backend and the library has it
+            // (`select` answered `Pkcs11`), so the caller guarantees C7 for the module path and
+            // C6 (33 and 256 bytes) for the token label and the PIN, the preconditions of
+            // `PathIn::new` and `TextIn::new`. The pointers are the caller's own, copied out of
+            // its configuration. The wrappers are locals of this call, so they do not outlive
+            // that guarantee.
+            let (module_path, token_label, user_pin) = unsafe {
+                (
+                    PathIn::new(config.pkcs11_module_path),
+                    TextIn::<TOKEN_LABEL_SCAN_LEN>::new(config.pkcs11_token_label),
+                    TextIn::<USER_PIN_SCAN_LEN>::new(config.pkcs11_user_pin),
+                )
+            };
+            // Step 1 for the fields, in field order, before any format check.
+            check_null(&[&module_path, &token_label, &user_pin, &approvers])?;
+            keystore::BackendConfig::pkcs11(&keystore::Pkcs11Fields {
+                module_path: module_path.bytes()?,
+                token_label: token_label.bytes()?,
+                user_pin: user_pin.bytes()?,
+            })?
+        }
+    };
+    // SAFETY: the caller guarantees C6 (4097 bytes) for a non-NULL `audit_log_path`, the
+    // precondition of `TextIn::new`; `eki_ks_open` passes NULL. The pointer is the caller's own,
+    // copied out of its configuration. The wrapper is a local of this call, so it does not
+    // outlive that guarantee.
+    let audit_path = unsafe { TextIn::<AUDIT_PATH_SCAN_LEN>::new(config.audit_log_path) };
+    let audit_log = match audit_path.optional_bytes()? {
+        Some(text) => Some(keystore::audit::parse_path(text)?),
+        None => None,
+    };
+    let dual = match approvers.bytes()? {
+        Some(keys) => Some(keystore::dual::DualControl::parse(keys)?),
+        None => None,
+    };
+    keystore::open(keystore::OpenConfig {
+        backend,
+        audit_log,
+        dual,
+    })
+}
+
 /// Returns the ABI version this library implements (`EKI_ABI_VERSION`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn eki_abi_version() -> u32 {
@@ -992,32 +1119,17 @@ pub unsafe extern "C" fn eki_ks_open(
     barrier([out], |[out]| {
         check_null(&[&config, out])?;
         let config = config.read()?;
-        let handle = match keystore::select(config.backend)? {
-            keystore::Selected::Software => keystore::open_software(),
-            keystore::Selected::Pkcs11 => {
-                // SAFETY: the configuration selects the PKCS#11 backend and the library has it
-                // (`select` answered `Pkcs11`), so the caller guarantees C7 for the module path
-                // and C6 (33 and 256 bytes) for the token label and the PIN, the preconditions of
-                // `PathIn::new` and `TextIn::new`. The pointers are the caller's own, copied out
-                // of its `eki_ks_config` by `read`. The wrappers are locals of this call, so they
-                // do not outlive that guarantee.
-                let (module_path, token_label, user_pin) = unsafe {
-                    (
-                        PathIn::new(config.pkcs11_module_path),
-                        TextIn::<TOKEN_LABEL_SCAN_LEN>::new(config.pkcs11_token_label),
-                        TextIn::<USER_PIN_SCAN_LEN>::new(config.pkcs11_user_pin),
-                    )
-                };
-                // Step 1 for the three fields, in field order, before any format check.
-                check_null(&[&module_path, &token_label, &user_pin])?;
-                keystore::open_pkcs11(&keystore::Pkcs11Fields {
-                    module_path: module_path.bytes()?,
-                    token_label: token_label.bytes()?,
-                    user_pin: user_pin.bytes()?,
-                })?
-            }
+        // The same configuration with no audit log and no approvers.
+        let config = eki_ks_config_v2 {
+            backend: config.backend,
+            pkcs11_module_path: config.pkcs11_module_path,
+            pkcs11_token_label: config.pkcs11_token_label,
+            pkcs11_user_pin: config.pkcs11_user_pin,
+            audit_log_path: core::ptr::null(),
+            approver_public_keys: core::ptr::null(),
+            approver_count: 0,
         };
-        out.put_handle(Box::new(handle))
+        out.put_handle(Box::new(open_handle(&config)?))
     })
 }
 
@@ -1032,11 +1144,12 @@ pub unsafe extern "C" fn eki_ks_close(ks: *mut eki_ks) {
     // back is therefore the single release of that allocation, with the type it was made with,
     // and no reference to the handle outlives it.
     let handle = unsafe { Box::from_raw(ks.cast::<Handle>()) };
-    // Dropping the handle drops the backend: the software backend wipes every key, the PKCS#11
-    // backend closes its session and releases its module, which finalises the module at the last
-    // handle. No drop on that path is expected to panic, but a backend's drop calls into other
-    // code, and a panic must not unwind into C.
-    contain_panic((), move || drop(handle));
+    // `Handle::close` writes the `close` record, then drops the backend (the software backend
+    // wipes every key, the PKCS#11 backend closes its session and releases its module, which
+    // finalises the module at the last handle) and last the audit log, which releases its lock.
+    // No step is expected to panic, but a backend's drop calls into other code, and a panic must
+    // not unwind into C.
+    contain_panic((), move || handle.close());
 }
 
 /// Copies the most recent error message of the handle into `buf` with snprintf semantics and
@@ -1420,7 +1533,7 @@ pub unsafe extern "C" fn eki_ks_open_v2(
     let (config, out) = unsafe { (StructIn::new(config), StructOut::new(out)) };
     barrier([out], |[out]| {
         check_null(&[&config, out])?;
-        Err(Error::Unsupported)
+        out.put_handle(Box::new(open_handle(&config.read()?)?))
     })
 }
 
@@ -1444,9 +1557,10 @@ pub unsafe extern "C" fn eki_ks_get_info_v2(
         )
     };
     barrier([info_out], |[info_out]| {
-        let _store = ks.begin()?;
+        let mut store = ks.begin()?;
         check_null(&[&id, info_out])?;
-        Err(Error::Unsupported)
+        let info = store.get_info(&KeyId::from(id.read()?))?;
+        info_out.write(info.to_abi_v2())
     })
 }
 
@@ -1471,9 +1585,10 @@ pub unsafe extern "C" fn eki_ks_rotate(
         )
     };
     barrier([new_id_out], |[new_id_out]| {
-        let _store = ks.begin()?;
+        let mut store = ks.begin()?;
         check_null(&[&old_id, new_id_out])?;
-        Err(Error::Unsupported)
+        let new_id = store.rotate(&KeyId::from(old_id.read()?))?;
+        new_id_out.write(new_id.into())
     })
 }
 
@@ -1486,9 +1601,9 @@ pub unsafe extern "C" fn eki_ks_revoke(ks: *mut eki_ks, id: *const eki_key_id) -
     // outlive that guarantee.
     let (ks, id) = unsafe { (HandleIn::new(ks.cast_const()), StructIn::new(id)) };
     barrier(NO_OUTPUTS, |[]| {
-        let _store = ks.begin()?;
+        let mut store = ks.begin()?;
         check_null(&[&id])?;
-        Err(Error::Unsupported)
+        store.revoke(&KeyId::from(id.read()?))
     })
 }
 
@@ -1518,9 +1633,9 @@ pub unsafe extern "C" fn eki_ks_hmac_sha256_verify(
         )
     };
     barrier(NO_OUTPUTS, |[]| {
-        let _store = ks.begin()?;
+        let mut store = ks.begin()?;
         check_null(&[&id, &msg, &tag])?;
-        Err(Error::Unsupported)
+        store.hmac_sha256_verify(&KeyId::from(id.read()?), msg.bytes()?, tag.bytes()?)
     })
 }
 
@@ -1546,9 +1661,11 @@ pub unsafe extern "C" fn eki_ks_destroy_request(
         )
     };
     barrier([request_out], |[request_out]| {
-        let _store = ks.begin()?;
+        let mut store = ks.begin()?;
         check_null(&[&id, request_out])?;
-        Err(Error::Unsupported)
+        let request = store.destroy_request(&KeyId::from(id.read()?))?;
+        request_out.bytes()?.copy_from_slice(&request);
+        Ok(())
     })
 }
 
@@ -1581,9 +1698,14 @@ pub unsafe extern "C" fn eki_ks_destroy_approve(
         )
     };
     barrier([remaining_out], |[remaining_out]| {
-        let _store = ks.begin()?;
+        let mut store = ks.begin()?;
         check_null(&[&request, &approver_public_key, &sig, remaining_out])?;
-        Err(Error::Unsupported)
+        let remaining = store.destroy_approve(
+            array(request.bytes()?)?,
+            array(approver_public_key.bytes()?)?,
+            array(sig.bytes()?)?,
+        )?;
+        remaining_out.write(remaining)
     })
 }
 
@@ -1609,9 +1731,11 @@ pub unsafe extern "C" fn eki_ks_audit_head(
         )
     };
     barrier([(hash_out, seq_out)], |[(hash_out, seq_out)]| {
-        let _store = ks.begin()?;
+        let store = ks.begin()?;
         check_null(&[hash_out, seq_out])?;
-        Err(Error::Unsupported)
+        let (hash, seq) = store.audit_head()?;
+        hash_out.bytes()?.copy_from_slice(&hash);
+        seq_out.write(seq)
     })
 }
 
@@ -1640,7 +1764,13 @@ pub unsafe extern "C" fn eki_audit_verify(
     };
     barrier([records_out], |[records_out]| {
         check_null(&[&path, &expected_head, records_out])?;
-        Err(Error::Unsupported)
+        // An empty `expected_head` stands for NULL (`Input::optional_fixed`).
+        let expected_head = match expected_head.bytes()? {
+            [] => None,
+            head => Some(array(head)?),
+        };
+        let records = keystore::audit::verify_file(path.bytes()?, expected_head)?;
+        records_out.write(records)
     })
 }
 
@@ -2031,6 +2161,52 @@ mod tests {
         let bytes = label.bytes().expect("non-NULL");
         assert_eq!(bytes.len(), LABEL_SCAN_LEN);
         assert_eq!(keystore::Label::parse(bytes), None, "rejected by length");
+    }
+
+    #[test]
+    fn null_optional_text_is_none() {
+        // SAFETY: the pointer is NULL, which the precondition allows; it is never dereferenced.
+        let path = unsafe { TextIn::<AUDIT_PATH_SCAN_LEN>::new(core::ptr::null()) };
+        assert_eq!(path.optional_bytes(), Ok(None));
+        let text = c"log";
+        // SAFETY: `text` is a live NUL-terminated string that nothing writes.
+        let path = unsafe { TextIn::<AUDIT_PATH_SCAN_LEN>::new(text.as_ptr()) };
+        assert_eq!(path.optional_bytes(), Ok(Some(&b"log"[..])));
+    }
+
+    #[test]
+    fn no_approver_keys_read_nothing() {
+        // A count of 0 or a count outside 2 to 8 makes no claim about the pointer, so a dangling
+        // one must never be read; Miri would report a read.
+        let dangling = core::ptr::dangling::<u8>();
+        // SAFETY: the count is 0, for which the precondition requires nothing of the pointer.
+        let none = unsafe { ApproverKeysIn::new(dangling, 0) };
+        assert_eq!(none.bytes(), Ok(None));
+        for count in [1, ekicore_abi::EKI_APPROVERS_MAX + 1, usize::MAX] {
+            // SAFETY: the count is outside 2 to 8, for which the precondition requires nothing.
+            let keys = unsafe { ApproverKeysIn::new(dangling, count) };
+            assert_eq!(keys.bytes(), Err(Error::InvalidArgument));
+            // SAFETY: as above; the pointer is NULL and never dereferenced.
+            let null = unsafe { ApproverKeysIn::new(core::ptr::null(), count) };
+            assert_eq!(null.bytes(), Err(Error::NullPointer), "NULL check first");
+        }
+        // SAFETY: the pointer is NULL with a count of 0, which the precondition allows.
+        let null = unsafe { ApproverKeysIn::new(core::ptr::null(), 0) };
+        assert_eq!(check_null(&[&null]), Ok(()));
+        assert_eq!(null.bytes(), Ok(None));
+    }
+
+    #[test]
+    fn approver_keys_cover_exactly_count_keys() {
+        for count in [2, ekicore_abi::EKI_APPROVERS_MAX] {
+            // An allocation of exactly `count * 65` bytes: a read past it is reported by Miri.
+            let keys: Box<[u8]> = (0..count * EKI_P256_PUBLIC_KEY_LEN)
+                .map(|i| (i % 251) as u8)
+                .collect();
+            // SAFETY: `keys` is a live allocation of `count * 65` bytes that nothing writes.
+            let input = unsafe { ApproverKeysIn::new(keys.as_ptr(), count) };
+            assert_eq!(input.bytes(), Ok(Some(&keys[..])));
+        }
     }
 
     #[test]

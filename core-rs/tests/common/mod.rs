@@ -13,9 +13,9 @@ use std::ffi::CString;
 
 use ekicore_abi::{
     EKI_KS_SOFTWARE, eki_key_alg, eki_key_id, eki_key_info, eki_ks, eki_ks_backend, eki_ks_config,
-    eki_status,
+    eki_ks_config_v2, eki_status,
 };
-use ekicore_rs::ffi::{eki_ks_close, eki_ks_destroy, eki_ks_generate, eki_ks_open};
+use ekicore_rs::ffi::{eki_ks_close, eki_ks_destroy, eki_ks_generate, eki_ks_open, eki_ks_open_v2};
 
 /// Byte every output buffer is pre-filled with before a call.
 pub const FILL: u8 = 0xA5;
@@ -229,6 +229,52 @@ pub fn try_open(cfg: &eki_ks_config) -> Opened {
     }
 }
 
+/// A version 2 configuration: the fields of `base`, the audit log path (`None` for NULL) and
+/// the approver keys (`None` for NULL) with `count`.
+pub fn config_v2(
+    base: &eki_ks_config,
+    audit_log: Option<&CString>,
+    approver_keys: Option<&[u8]>,
+    count: usize,
+) -> eki_ks_config_v2 {
+    eki_ks_config_v2 {
+        backend: base.backend,
+        pkcs11_module_path: base.pkcs11_module_path,
+        pkcs11_token_label: base.pkcs11_token_label,
+        pkcs11_user_pin: base.pkcs11_user_pin,
+        audit_log_path: audit_log.map_or(core::ptr::null(), |path| path.as_ptr()),
+        approver_public_keys: approver_keys.map_or(core::ptr::null(), <[u8]>::as_ptr),
+        approver_count: count,
+    }
+}
+
+/// Calls `eki_ks_open_v2` as [`try_open`] calls `eki_ks_open`.
+pub fn try_open_v2(cfg: &eki_ks_config_v2) -> Opened {
+    let mut handle: *mut eki_ks = core::ptr::dangling_mut();
+    // SAFETY: `cfg` and `handle` are live locals; the configuration's pointers are NULL or point
+    // to live strings and key arrays of the sizes its counts give; the library writes only
+    // `*out`.
+    let status = unsafe { eki_ks_open_v2(cfg, &mut handle) };
+    let out_is_null = handle.is_null();
+    let store = (status == eki_status::EKI_OK && !out_is_null).then(|| Store {
+        ks: handle,
+        created: RefCell::new(Vec::new()),
+    });
+    Opened {
+        status,
+        out_is_null,
+        store,
+    }
+}
+
+/// Asserts that `eki_ks_open_v2` fails with `expected` and leaves `*out` NULL.
+#[track_caller]
+pub fn assert_open_v2_fails(cfg: &eki_ks_config_v2, expected: eki_status) {
+    let opened = try_open_v2(cfg);
+    assert_eq!(opened.status, expected, "eki_ks_open_v2");
+    assert!(opened.out_is_null, "*out must be NULL on failure");
+}
+
 /// Asserts that `eki_ks_open` fails with `expected` and leaves `*out` NULL.
 #[track_caller]
 pub fn assert_open_fails(cfg: &eki_ks_config, expected: eki_status) {
@@ -253,6 +299,16 @@ impl Store {
         opened
             .store
             .expect("eki_ks_open returned OK and a NULL handle")
+    }
+
+    /// Opens a store with `eki_ks_open_v2` and asserts success.
+    #[track_caller]
+    pub fn open_v2(cfg: &eki_ks_config_v2) -> Store {
+        let opened = try_open_v2(cfg);
+        assert_eq!(opened.status, eki_status::EKI_OK, "eki_ks_open_v2");
+        opened
+            .store
+            .expect("eki_ks_open_v2 returned OK and a NULL handle")
     }
 
     /// Opens a software store and asserts success.
@@ -320,3 +376,4 @@ pub fn last_error(ks: *const eki_ks) -> String {
 }
 
 pub mod ks;
+pub mod lifecycle;

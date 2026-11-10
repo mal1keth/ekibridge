@@ -34,6 +34,17 @@ pub fn p256_verify(public_key: &[u8], msg: &[u8], sig: &[u8]) -> Result<(), Erro
     key.verify(msg, &signature).map_err(|_| Error::AuthFailed)
 }
 
+/// Checks that `public_key` is a SEC1 uncompressed P-256 point: 65 bytes, the tag `0x04`, and
+/// a point of the curve, else [`Error::InvalidArgument`]. These are the key checks of
+/// [`p256_verify`], for a key that is accepted before any signature is checked (an approver key
+/// of a key store).
+pub fn p256_check_public_key(public_key: &[u8]) -> Result<(), Error> {
+    if public_key.len() != EKI_P256_PUBLIC_KEY_LEN {
+        return Err(Error::InvalidArgument);
+    }
+    parse_public_key(public_key).map(drop)
+}
+
 /// The size rules, which only a Rust caller can break: through the C ABI both buffers have a
 /// fixed size by construction.
 fn check_sizes(public_key: &[u8], sig: &[u8]) -> Result<(), Error> {

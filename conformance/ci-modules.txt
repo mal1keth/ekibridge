@@ -10,3 +10,6 @@ ecdsa
 ks_software
 ks_pkcs11
 pq
+ks_lifecycle
+audit
+ks_pkcs11_lifecycle

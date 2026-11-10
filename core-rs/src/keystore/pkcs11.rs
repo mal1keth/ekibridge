@@ -7,6 +7,15 @@
 //! (ECDSA P-256). Objects that carry an id but form none of these shapes, or whose `CKA_LABEL` is
 //! not a valid label, were made by another program: they still take the id ([`Found::Foreign`]).
 //!
+//! The lifecycle state of a key is its usage attributes (ABI 2 contract section 3): the
+//! "protect" group (`CKA_WRAP` and `CKA_ENCRYPT` of an AES key, `CKA_SIGN` of an HMAC key or of
+//! the private half of a key pair) and the "check" group (`CKA_UNWRAP` and `CKA_DECRYPT`,
+//! `CKA_VERIFY`, `CKA_VERIFY` of the public half). Both groups TRUE is ACTIVE, protect FALSE and
+//! check TRUE is RETIRED, both FALSE is REVOKED; any other combination, or a flag that cannot be
+//! read, makes the objects foreign. Only these attributes are read: SoftHSM2 sets usage flags
+//! outside the templates to TRUE by default (for example `CKA_SIGN` of an AES key), so they say
+//! nothing about the state. The token itself then refuses what the state forbids.
+//!
 //! Every operation looks its objects up again by id. Object handles are not kept between calls,
 //! because another session or process may destroy or replace the objects in between; when that
 //! happens between the store's checks and the operation, the operation is a backend failure.
@@ -14,9 +23,11 @@
 //! The module is driven through `cryptoki`, whose API is safe: this file has no `unsafe`.
 //!
 //! Panics: every token-side change is one module call (`C_GenerateKey`, `C_GenerateKeyPair`,
-//! `C_UnwrapKey`, `C_DestroyObject`), made after everything that can fail on this side, so a
-//! panic finds the token as it was before the call or as the call left it. An object search is
-//! finished by the drop of cryptoki's search iterator, which also runs while a panic unwinds.
+//! `C_UnwrapKey`, `C_SetAttributeValue`, `C_DestroyObject`), made after everything that can fail
+//! on this side, so a panic finds the token as it was before the call or as the call left it. A
+//! state change of two calls clears the protect group first, so between them the key is
+//! RETIRED, a state of the table. An object search is finished by the drop of cryptoki's search
+//! iterator, which also runs while a panic unwinds.
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
@@ -39,7 +50,7 @@ use secrecy::SecretBox;
 use sha2::{Digest, Sha256};
 
 use super::{
-    Backend, BackendError, BackendResult, Found, KeyAlg, KeyId, KeyInfo, Label,
+    Backend, BackendError, BackendResult, Found, KeyAlg, KeyId, KeyInfo, KeyState, Label,
     PKCS11_TOKEN_LABEL_MAX_LEN, PKCS11_USER_PIN_MAX_LEN, Pkcs11Fields,
 };
 use crate::error::Error;
@@ -343,6 +354,28 @@ impl Backend for Pkcs11Backend {
         self.sign_with(&Mechanism::Sha256Hmac, key.key, msg)
     }
 
+    fn hmac_sha256_verify(
+        &mut self,
+        id: &KeyId,
+        msg: &[u8],
+        tag: &[u8; EKI_HMAC_SHA256_LEN],
+    ) -> BackendResult<()> {
+        let key = self.locate_key(id, KeyAlg::HmacSha256)?;
+        // C_Verify compares inside the token. A wrong tag of the right length is
+        // CKR_SIGNATURE_INVALID; CKR_SIGNATURE_LEN_RANGE cannot occur for 32 bytes but means a
+        // mismatch as well.
+        match self
+            .session
+            .verify(&Mechanism::Sha256Hmac, key.key, msg, tag)
+        {
+            Ok(()) => Ok(()),
+            Err(CkError::Pkcs11(RvError::SignatureInvalid | RvError::SignatureLenRange, _)) => {
+                Err(BackendError::AuthFailed)
+            }
+            Err(error) => Err(failure(error)),
+        }
+    }
+
     fn wrap(&mut self, kek: &KeyId, key: &KeyId) -> BackendResult<[u8; EKI_WRAPPED_KEY_LEN]> {
         let wrapping = self.locate_key(kek, KeyAlg::Aes256)?;
         let wrapped = self
@@ -381,6 +414,20 @@ impl Backend for Pkcs11Backend {
         self.session
             .unwrap_key(&Mechanism::AesKeyWrap, wrapping.key, blob, &template)
             .map_err(|_| BackendError::AuthFailed)?;
+        Ok(())
+    }
+
+    fn set_state(&mut self, id: &KeyId, state: KeyState) -> BackendResult<()> {
+        let key = self.locate(id)?.key.ok_or_else(changed_meanwhile)?;
+        let [protect, check] = usage_groups(key.info.alg);
+        // Protect first, so that the key is RETIRED between the two calls; for a key pair that
+        // is the private half first.
+        if key.info.state < KeyState::Retired && state >= KeyState::Retired {
+            self.clear(&key, &protect)?;
+        }
+        if key.info.state < KeyState::Revoked && state >= KeyState::Revoked {
+            self.clear(&key, &check)?;
+        }
         Ok(())
     }
 
@@ -502,11 +549,50 @@ impl Pkcs11Backend {
             Some(Attribute::Label(text)) => Label::parse(&text),
             _ => None,
         };
-        Ok(label.map(|label| KeyObjects {
-            info: KeyInfo { alg, label },
+        let Some(label) = label else {
+            return Ok(None);
+        };
+        let mut objects = KeyObjects {
+            info: KeyInfo {
+                alg,
+                label,
+                state: KeyState::Active,
+            },
             key,
             public,
+        };
+        let [protect, check] = usage_groups(alg);
+        let protect = self.read_flags(&objects, &protect)?;
+        let check = self.read_flags(&objects, &check)?;
+        Ok(state_of(&protect, &check).map(|state| {
+            objects.info.state = state;
+            objects
         }))
+    }
+
+    /// The values of the usage flags of `group`, `None` for a flag that cannot be read.
+    fn read_flags(&self, key: &KeyObjects, group: &Group) -> BackendResult<Vec<Option<bool>>> {
+        let Some(object) = key.object(group.half) else {
+            return Ok(vec![None]);
+        };
+        group
+            .flags
+            .iter()
+            .map(|&kind| Ok(self.read(object, kind)?.as_ref().and_then(flag_value)))
+            .collect()
+    }
+
+    /// Sets every flag of `group` to FALSE in one `C_SetAttributeValue` call.
+    fn clear(&mut self, key: &KeyObjects, group: &Group) -> BackendResult<()> {
+        let object = key.object(group.half).ok_or_else(changed_meanwhile)?;
+        let template = group
+            .flags
+            .iter()
+            .map(|&kind| cleared(kind))
+            .collect::<BackendResult<Vec<_>>>()?;
+        self.session
+            .update_attributes(object, &template)
+            .map_err(failure)
     }
 
     /// Whether `CKA_EC_PARAMS` of `object` names P-256 by its OID.
@@ -572,6 +658,99 @@ struct KeyObjects {
     key: ObjectHandle,
     /// The public half of a key pair.
     public: Option<ObjectHandle>,
+}
+
+impl KeyObjects {
+    /// The object that holds the flags of `half`.
+    fn object(&self, half: Half) -> Option<ObjectHandle> {
+        match half {
+            Half::Key => Some(self.key),
+            Half::Public => self.public,
+        }
+    }
+}
+
+// --- Lifecycle state (ABI 2 contract section 3) -------------------------------------------------
+
+/// Which object of a key carries a group of flags.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Half {
+    /// The secret key, or the private half of a key pair.
+    Key,
+    /// The public half of a key pair.
+    Public,
+}
+
+/// The usage flags that together say whether a key may protect, or check, anything.
+#[derive(Clone, Copy, Debug)]
+struct Group {
+    half: Half,
+    flags: &'static [AttributeType],
+}
+
+/// The protect group and the check group of a key of `alg`, from the contract's table.
+fn usage_groups(alg: KeyAlg) -> [Group; 2] {
+    let group = |half, flags| Group { half, flags };
+    match alg {
+        KeyAlg::Aes256 => [
+            group(Half::Key, &[AttributeType::Wrap, AttributeType::Encrypt]),
+            group(Half::Key, &[AttributeType::Unwrap, AttributeType::Decrypt]),
+        ],
+        KeyAlg::HmacSha256 => [
+            group(Half::Key, &[AttributeType::Sign]),
+            group(Half::Key, &[AttributeType::Verify]),
+        ],
+        KeyAlg::EcdsaP256 => [
+            group(Half::Key, &[AttributeType::Sign]),
+            group(Half::Public, &[AttributeType::Verify]),
+        ],
+    }
+}
+
+/// The state that the values of the protect and the check flags form: all TRUE is ACTIVE,
+/// protect FALSE and check TRUE is RETIRED, all FALSE is REVOKED. Any other combination, an
+/// unreadable flag (`None`) included, is no state.
+fn state_of(protect: &[Option<bool>], check: &[Option<bool>]) -> Option<KeyState> {
+    let all = |flags: &[Option<bool>], value: bool| flags.iter().all(|&flag| flag == Some(value));
+    match (
+        all(protect, true),
+        all(protect, false),
+        all(check, true),
+        all(check, false),
+    ) {
+        (true, _, true, _) => Some(KeyState::Active),
+        (_, true, true, _) => Some(KeyState::Retired),
+        (_, true, _, true) => Some(KeyState::Revoked),
+        _ => None,
+    }
+}
+
+/// The value of a usage flag attribute; `None` for any other attribute.
+fn flag_value(attribute: &Attribute) -> Option<bool> {
+    match *attribute {
+        Attribute::Wrap(value)
+        | Attribute::Encrypt(value)
+        | Attribute::Unwrap(value)
+        | Attribute::Decrypt(value)
+        | Attribute::Sign(value)
+        | Attribute::Verify(value) => Some(value),
+        _ => None,
+    }
+}
+
+/// The usage flag `kind` set to FALSE.
+fn cleared(kind: AttributeType) -> BackendResult<Attribute> {
+    match kind {
+        AttributeType::Wrap => Ok(Attribute::Wrap(false)),
+        AttributeType::Encrypt => Ok(Attribute::Encrypt(false)),
+        AttributeType::Unwrap => Ok(Attribute::Unwrap(false)),
+        AttributeType::Decrypt => Ok(Attribute::Decrypt(false)),
+        AttributeType::Sign => Ok(Attribute::Sign(false)),
+        AttributeType::Verify => Ok(Attribute::Verify(false)),
+        _ => Err(BackendError::Internal(
+            "a usage group holds an attribute that is not a usage flag",
+        )),
+    }
 }
 
 /// What one object is, as far as the shapes care: its class and, for a key object, its key
@@ -1035,5 +1214,47 @@ mod tests {
         assert!(public.contains(&Attribute::EcParams(P256_PARAMS.to_vec())));
         assert!(private.contains(&Attribute::Extractable(false)));
         assert!(private.contains(&Attribute::Sensitive(true)));
+    }
+
+    #[test]
+    fn states_follow_the_attribute_table() {
+        let (t, f) = (Some(true), Some(false));
+        assert_eq!(state_of(&[t, t], &[t, t]), Some(KeyState::Active));
+        assert_eq!(state_of(&[f, f], &[t, t]), Some(KeyState::Retired));
+        assert_eq!(state_of(&[f, f], &[f, f]), Some(KeyState::Revoked));
+        assert_eq!(state_of(&[t], &[t]), Some(KeyState::Active));
+        assert_eq!(state_of(&[f], &[t]), Some(KeyState::Retired));
+        assert_eq!(state_of(&[f], &[f]), Some(KeyState::Revoked));
+        type Flags<'a> = &'a [Option<bool>];
+        let foreign: [(Flags, Flags); 8] = [
+            (&[t], &[f]),
+            (&[t, f], &[t, t]),
+            (&[f, t], &[t, t]),
+            (&[f, f], &[t, f]),
+            (&[f, f], &[f, t]),
+            (&[None], &[t]),
+            (&[t], &[None]),
+            (&[f], &[None]),
+        ];
+        for (protect, check) in foreign {
+            assert_eq!(state_of(protect, check), None, "{protect:?} {check:?}");
+        }
+    }
+
+    #[test]
+    fn usage_groups_name_flags_only() {
+        for alg in [KeyAlg::Aes256, KeyAlg::HmacSha256, KeyAlg::EcdsaP256] {
+            for group in usage_groups(alg) {
+                for &kind in group.flags {
+                    let attribute = cleared(kind).expect("a usage flag");
+                    assert_eq!(attribute.attribute_type(), kind);
+                    assert_eq!(flag_value(&attribute), Some(false));
+                }
+            }
+        }
+        let [protect, check] = usage_groups(KeyAlg::EcdsaP256);
+        assert_eq!((protect.half, check.half), (Half::Key, Half::Public));
+        assert!(cleared(AttributeType::Label).is_err());
+        assert_eq!(flag_value(&Attribute::Token(true)), None);
     }
 }

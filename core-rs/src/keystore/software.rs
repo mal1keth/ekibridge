@@ -1,6 +1,6 @@
 //! The software backend: keys in memory, for the lifetime of the handle (plan 4.3, "Software").
 //!
-//! A map from id to label and key material. AES-256 and HMAC-SHA256 keys are 32 random bytes;
+//! A map from id to label, lifecycle state and key material. AES-256 and HMAC-SHA256 keys are 32 random bytes;
 //! an ECDSA P-256 key is a `p256` signing key. Every value is wiped when its key is destroyed and
 //! when the handle is closed, because dropping the map drops each key.
 
@@ -16,7 +16,7 @@ use p256::ecdsa::{Signature, SigningKey};
 use p256::elliptic_curve::Generate;
 use secrecy::{ExposeSecret, ExposeSecretMut, SecretBox};
 
-use super::{Backend, BackendError, BackendResult, Found, KeyAlg, KeyId, KeyInfo, Label};
+use super::{Backend, BackendError, BackendResult, Found, KeyAlg, KeyId, KeyInfo, KeyState, Label};
 use crate::error::Error;
 use crate::{hmac, keywrap};
 
@@ -110,7 +110,21 @@ fn random_signing_key() -> BackendResult<Box<SigningKey>> {
 /// One stored key.
 struct StoredKey {
     label: Label,
+    /// The lifecycle state, a plain field: the store has already checked it against the state
+    /// table before any operation reaches the backend.
+    state: KeyState,
     material: Material,
+}
+
+impl StoredKey {
+    /// A new ACTIVE key.
+    fn active(label: &Label, material: Material) -> Self {
+        Self {
+            label: *label,
+            state: KeyState::Active,
+            material,
+        }
+    }
 }
 
 /// The store logic broke a precondition of [`Backend`].
@@ -188,14 +202,14 @@ impl Backend for Software {
             Found::Key(KeyInfo {
                 alg: key.material.alg(),
                 label: key.label,
+                state: key.state,
             })
         }))
     }
 
     fn create(&mut self, alg: KeyAlg, label: &Label, id: &KeyId) -> BackendResult<()> {
         let material = Material::generate(alg)?;
-        let label = *label;
-        self.insert(*id, StoredKey { label, material })
+        self.insert(*id, StoredKey::active(label, material))
     }
 
     fn public_key(&mut self, id: &KeyId) -> BackendResult<[u8; EKI_P256_PUBLIC_KEY_LEN]> {
@@ -224,6 +238,23 @@ impl Backend for Software {
             .map_err(|_| BackendError::Internal("HMAC-SHA256 rejected a 32-byte key"))
     }
 
+    fn hmac_sha256_verify(
+        &mut self,
+        id: &KeyId,
+        msg: &[u8],
+        tag: &[u8; EKI_HMAC_SHA256_LEN],
+    ) -> BackendResult<()> {
+        let key = self.secret(id, KeyAlg::HmacSha256)?;
+        // `hmac_sha256_verify` compares in constant time (the `hmac` crate's `verify_slice`).
+        match hmac::hmac_sha256_verify(key, msg, tag) {
+            Ok(()) => Ok(()),
+            Err(Error::AuthFailed) => Err(BackendError::AuthFailed),
+            Err(_) => Err(BackendError::Internal(
+                "HMAC-SHA256 rejected a 32-byte key or tag",
+            )),
+        }
+    }
+
     fn wrap(&mut self, kek: &KeyId, key: &KeyId) -> BackendResult<[u8; EKI_WRAPPED_KEY_LEN]> {
         Ok(keywrap::wrap(
             self.secret(kek, KeyAlg::Aes256)?,
@@ -245,8 +276,14 @@ impl Backend for Software {
             Err(_) => return Err(BackendError::Internal("AES key unwrap failed on sizes")),
         };
         let material = Material::from_secret(alg, secret)?;
-        let label = *label;
-        self.insert(*id, StoredKey { label, material })
+        self.insert(*id, StoredKey::active(label, material))
+    }
+
+    fn set_state(&mut self, id: &KeyId, state: KeyState) -> BackendResult<()> {
+        let key = self.keys.get_mut(id).ok_or(PRECONDITION)?;
+        // `max` keeps a later state: a key never moves back.
+        key.state = key.state.max(state);
+        Ok(())
     }
 
     fn destroy(&mut self, id: &KeyId) -> BackendResult<()> {
@@ -295,6 +332,7 @@ mod tests {
             let info = KeyInfo {
                 alg,
                 label: label("test"),
+                state: KeyState::Active,
             };
             assert_eq!(store.find(&id), Ok(Some(Found::Key(info))));
         }
@@ -376,5 +414,40 @@ mod tests {
             assert_eq!(ecdsa::p256_verify(&public_key, msg, &sig), Ok(()));
             assert_eq!(store.sign(&EC, msg), Ok(sig), "RFC 6979 is deterministic");
         }
+    }
+
+    #[test]
+    fn state_moves_forward_only() {
+        let mut store = with_keys(&[(MAC, KeyAlg::HmacSha256)]);
+        let state = |store: &mut Software| match store.find(&MAC) {
+            Ok(Some(Found::Key(info))) => Some(info.state),
+            _ => None,
+        };
+        assert_eq!(state(&mut store), Some(KeyState::Active));
+        assert_eq!(store.set_state(&MAC, KeyState::Retired), Ok(()));
+        assert_eq!(state(&mut store), Some(KeyState::Retired));
+        assert_eq!(store.set_state(&MAC, KeyState::Active), Ok(()));
+        assert_eq!(state(&mut store), Some(KeyState::Retired), "never back");
+        assert_eq!(store.set_state(&MAC, KeyState::Revoked), Ok(()));
+        assert_eq!(state(&mut store), Some(KeyState::Revoked));
+        assert_eq!(store.set_state(&COPY, KeyState::Revoked), Err(PRECONDITION));
+    }
+
+    #[test]
+    fn hmac_verify_accepts_only_the_tag() {
+        let mut store = with_keys(&[(KEK, KeyAlg::Aes256), (MAC, KeyAlg::HmacSha256)]);
+        for msg in [&b""[..], b"message"] {
+            let mut tag = store.hmac_sha256(&MAC, msg).expect("hmac succeeds");
+            assert_eq!(store.hmac_sha256_verify(&MAC, msg, &tag), Ok(()));
+            tag[31] ^= 1;
+            assert_eq!(
+                store.hmac_sha256_verify(&MAC, msg, &tag),
+                Err(BackendError::AuthFailed)
+            );
+        }
+        assert_eq!(
+            store.hmac_sha256_verify(&KEK, b"m", &[0; 32]),
+            Err(PRECONDITION)
+        );
     }
 }
