@@ -10,12 +10,9 @@ single C ABI, with a conformance harness that proves the two are interchangeable
 [![fuzz](https://github.com/mal1keth/ekibridge/actions/workflows/fuzz.yml/badge.svg)](https://github.com/mal1keth/ekibridge/actions/workflows/fuzz.yml)
 [![pq](https://github.com/mal1keth/ekibridge/actions/workflows/pq.yml/badge.svg)](https://github.com/mal1keth/ekibridge/actions/workflows/pq.yml)
 
-**Status: in progress, started October 2026.** The ABI, both build systems, CI, the test suites,
-the conformance harness and vectors, the fuzz and benchmark harnesses and the interop callers are
-in place, and the C++ primitives are implemented behind the internal API. The exported functions
-are being implemented module by module; the table shows where each one stands. A function that is
-not implemented yet is a stub that returns `EKI_ERR_UNSUPPORTED` and its tests are disabled: the
-disabled tests are the specification the implementations are written against.
+**Status: in progress, started October 2026.** Every exported function is implemented in both
+libraries and passes the conformance harness; the fuzzing campaign and the bindings are still to
+come. The table shows where each module stands.
 
 | Module | C++ | Rust | Conformance | Fuzz |
 |---|---|---|---|---|
@@ -124,7 +121,24 @@ targets; Homebrew LLVM on macOS, since Apple clang ships without libFuzzer). Bui
 
 ```sh
 cmake --preset asan && cmake --build --preset asan && ctest --preset asan
-cargo +nightly miri test -p ekicore-rs --no-default-features
+```
+
+Miri runs what the `miri` job of `.github/workflows/rust.yml` runs: the tests that exercise the
+pointer handling of the C ABI (the `ffi` unit tests and the NULL-pointer, length and format tests
+of each ABI test file). The whole suite would take hours, because Miri interprets the
+elliptic-curve and AES arithmetic. The `--cfg` flags select the portable code of the `aes` and
+`keccak` crates, whose ARMv8 instructions Miri cannot execute. The audit-log tests need file
+access (`-Zmiri-disable-isolation`) and writes that are not made short on purpose: the library
+writes each audit record with one write and fails the call when it is short.
+
+```sh
+soft='--cfg aes_backend="soft" --cfg keccak_backend="soft"'
+RUSTFLAGS=$soft MIRIFLAGS='-Zmiri-disable-isolation -Zmiri-no-short-fd-operations' \
+  cargo +nightly miri test -p ekicore-rs --no-default-features --lib -- 'ffi::'
+RUSTFLAGS=$soft MIRIFLAGS='-Zmiri-disable-isolation -Zmiri-no-short-fd-operations' \
+  cargo +nightly miri test -p ekicore-rs --no-default-features --test 'ffi_*' -- \
+  null untouched invalid label_bounded unterminated unsupported length_checks \
+  open_v2_rows get_info_v2_rows no_approver_rows audit_head_rows version status_names
 ```
 
 ### SoftHSM2 token for the PKCS#11 tests

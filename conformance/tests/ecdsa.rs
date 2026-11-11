@@ -13,6 +13,10 @@ use ekicore_conformance::{In, Lib};
 const N: [u8; 32] = hex32("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551");
 /// P-256 field prime p (`openssl ecparam -name prime256v1 -param_enc explicit -text`).
 const P: [u8; 32] = hex32("ffffffff00000001000000000000000000000000ffffffffffffffffffffffff");
+/// A `y` with `(0, y)` on P-256 (`y^2 = b mod p`). With `x = p` it is the same point written with
+/// a coordinate not below p: a library that reduces `x` first would accept that key.
+const Y_AT_X_ZERO: [u8; 32] =
+    hex32("66485c780e2f83d72433bd5d84a06bb6541c2af31dae871728bf856a174f93f4");
 
 const fn hex32(s: &str) -> [u8; 32] {
     const fn nib(c: u8) -> u8 {
@@ -120,6 +124,11 @@ fn error_matrix() {
     off_curve[64] ^= 0x01;
     let mut x_is_p = pk;
     x_is_p[1..33].copy_from_slice(&P);
+    let mut x_zero = [0u8; 65];
+    x_zero[0] = 0x04;
+    x_zero[33..].copy_from_slice(&Y_AT_X_ZERO);
+    let mut x_is_p_same_point = x_zero;
+    x_is_p_same_point[1..33].copy_from_slice(&P);
     let mut r_zero = sig;
     r_zero[..32].fill(0);
     let mut s_zero = sig;
@@ -186,6 +195,20 @@ fn error_matrix() {
             (
                 "x coordinate = p",
                 Some(&x_is_p),
+                In::from(&msg),
+                Some(&sig),
+                EKI_ERR_INVALID_ARGUMENT,
+            ),
+            (
+                "(0, y) is a point of the curve: the key is accepted",
+                Some(&x_zero),
+                In::from(&msg),
+                Some(&sig),
+                EKI_ERR_AUTH_FAILED,
+            ),
+            (
+                "x coordinate = p, the y of (0, y) (not reduced mod p)",
+                Some(&x_is_p_same_point),
                 In::from(&msg),
                 Some(&sig),
                 EKI_ERR_INVALID_ARGUMENT,

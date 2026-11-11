@@ -1,7 +1,8 @@
 name: rust
 
 # Formatting, lints, build and tests of the Rust workspace; license and advisory policy;
-# Miri over ekicore-rs without the PKCS#11 backend (Miri cannot dlopen a module).
+# Miri over the pointer handling of ekicore-rs without the PKCS#11 backend (Miri cannot dlopen a
+# module).
 
 on: [push, pull_request]
 
@@ -54,10 +55,27 @@ jobs:
       - name: cargo deny check
         run: cargo deny check
 
+  # Miri interprets every instruction, so the elliptic-curve and AES arithmetic of the whole suite
+  # takes hours. The job runs the tests that exercise the pointer handling of the C ABI, where
+  # undefined behaviour would come from: the unit tests of the ffi module, and the NULL-pointer,
+  # length and format tests of each ABI test file. The cryptographic results are covered by the
+  # native test runs and the conformance harness. Property tests are ignored under Miri.
+  #
+  # RUSTFLAGS: on aarch64 the aes crate selects ARMv8 AES instructions and the keccak crate (pq
+  # feature) ARMv8 SHA-3 instructions, which Miri cannot execute; "soft" selects their portable
+  # code. On x86-64 both crates already run their portable code under Miri, so the flags change
+  # nothing here; they keep the commands the same on every host.
+  # MIRIFLAGS: the audit-log tests create, lock and read files and read the clock. Miri also
+  # makes some file writes short on purpose; the library writes each audit record with one write
+  # and fails the call when it is short (a regular file only does that on errors such as a full
+  # disk), so short writes are turned off.
   miri:
     name: miri
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      RUSTFLAGS: --cfg aes_backend="soft" --cfg keccak_backend="soft"
+      MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@v1
@@ -69,5 +87,10 @@ jobs:
           key: miri
       - name: miri setup
         run: cargo +nightly miri setup
-      - name: miri test
-        run: cargo +nightly miri test -p ekicore-rs --no-default-features
+      - name: miri test (ffi unit tests)
+        run: cargo +nightly miri test -p ekicore-rs --no-default-features --lib -- 'ffi::'
+      - name: miri test (NULL-pointer, length and format tests of the ABI test files)
+        run: >-
+          cargo +nightly miri test -p ekicore-rs --no-default-features --test 'ffi_*' --
+          null untouched invalid label_bounded unterminated unsupported length_checks
+          open_v2_rows get_info_v2_rows no_approver_rows audit_head_rows version status_names

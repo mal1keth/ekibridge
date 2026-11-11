@@ -134,7 +134,7 @@ eki_status id_taken(eki_ks& ks, const key_id& id, bool& exists) {
   return status;
 }
 
-std::optional<key_info> find_existing(eki_ks& ks, const key_id& id, eki_status& status) {
+std::optional<key_lookup> find_object(eki_ks& ks, const key_id& id, eki_status& status) {
   key_lookup found;
   status = record(ks, ks.backend->find(id, found));
   if (status != EKI_OK) {
@@ -142,7 +142,13 @@ std::optional<key_info> find_existing(eki_ks& ks, const key_id& id, eki_status& 
   }
   if (!found.exists) {
     status = EKI_ERR_KEY_NOT_FOUND;
-  } else if (!found.info.has_value()) {
+    return std::nullopt;
+  }
+  return found;
+}
+
+std::optional<key_info> describe(eki_ks& ks, const key_lookup& found, eki_status& status) {
+  if (!found.info.has_value()) {
     status = record(ks, outcome{
                             .status = EKI_ERR_BACKEND,
                             .detail = "the objects that carry this key id are not a key of a "
@@ -150,6 +156,14 @@ std::optional<key_info> find_existing(eki_ks& ks, const key_id& id, eki_status& 
                         });
   }
   return found.info;
+}
+
+std::optional<key_info> find_existing(eki_ks& ks, const key_id& id, eki_status& status) {
+  const std::optional<key_lookup> found = find_object(ks, id, status);
+  if (!found.has_value()) {
+    return std::nullopt;
+  }
+  return describe(ks, *found, status);
 }
 
 eki_status require_state(key_state state, key_use use) noexcept {
@@ -269,7 +283,9 @@ eki_status finish(eki_ks& ks, call& current, eki_status status) {
 namespace {
 
 using detail::call;
+using detail::describe;
 using detail::find_existing;
+using detail::find_object;
 using detail::id_taken;
 using detail::key_use;
 using detail::new_key_id;
@@ -370,21 +386,34 @@ eki_status hmac_sha256(eki_ks& ks, const key_id& id, bytes msg, mut_bytes out32)
 }
 
 // Contract order: kek exists, key exists, kek is AES-256, key is AES-256 or HMAC-SHA256, kek
-// ACTIVE, key not REVOKED. Audit record: key is the key wrapped, key2 the kek.
+// ACTIVE, key not REVOKED. Both ids are looked up before either is described, so a foreign kek
+// with a missing key is KEY_NOT_FOUND; a foreign object is a backend failure at the step that
+// needs its algorithm. Audit record: key is the key wrapped, key2 the kek.
 eki_status wrap(eki_ks& ks, const key_id& kek, const key_id& key, mut_bytes out40) {
   return run_logged(ks, audit::op::wrap, [&](call& current) {
     current.record.key = key;
     current.record.key2 = kek;
     eki_status status = EKI_OK;
-    const std::optional<key_info> kek_found = find_existing(ks, kek, status);
+    const std::optional<key_lookup> kek_object = find_object(ks, kek, status);
+    if (!kek_object.has_value()) {
+      return status;
+    }
+    const std::optional<key_lookup> key_object = find_object(ks, key, status);
+    if (!key_object.has_value()) {
+      return status;
+    }
+    const std::optional<key_info> kek_found = describe(ks, *kek_object, status);
     if (!kek_found.has_value()) {
       return status;
     }
-    const std::optional<key_info> key_found = find_existing(ks, key, status);
+    if (kek_found->alg != key_alg::aes_256) {
+      return EKI_ERR_WRONG_KEY_TYPE;
+    }
+    const std::optional<key_info> key_found = describe(ks, *key_object, status);
     if (!key_found.has_value()) {
       return status;
     }
-    if (kek_found->alg != key_alg::aes_256 || !is_wrappable(key_found->alg)) {
+    if (!is_wrappable(key_found->alg)) {
       return EKI_ERR_WRONG_KEY_TYPE;
     }
     status = require_state(kek_found->state, key_use::protect);

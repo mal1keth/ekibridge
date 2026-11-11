@@ -1012,6 +1012,9 @@ constexpr std::string_view kSigEmpty =
     "d971d1b0f6cee519766877bc76afa8bc4c7b59a2781d1e5d8e6d37a4f9775dc0";
 constexpr std::string_view kN = "ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551";
 constexpr std::string_view kP = "ffffffff00000001000000000000000000000000ffffffffffffffffffffffff";
+// A y with (0, y) on P-256: y^2 = b (mod p).
+constexpr std::string_view kYAtXZero =
+    "66485c780e2f83d72433bd5d84a06bb6541c2af31dae871728bf856a174f93f4";
 
 using PublicKey = std::array<std::uint8_t, 65>;
 using Signature = std::array<std::uint8_t, 64>;
@@ -1086,6 +1089,19 @@ TEST(FfiEcdsa, CoordinateNotBelowPIsInvalid) {
   pk = public_key();
   std::ranges::copy(p, pk.begin() + 33);
   EXPECT_EQ(name(verify(pk, "sample", sig_sample())), name(EKI_ERR_INVALID_ARGUMENT)) << "y = p";
+
+  // The rows above cannot tell "rejects x >= p" from "reduces x mod p and then finds the point off
+  // the curve". (0, y) is a point of the curve, so its key is accepted and the signature fails;
+  // (p, y) is the same point with x written as p, which only a library that rejects the coordinate
+  // turns away as INVALID_ARGUMENT.
+  PublicKey same_point{};
+  same_point.at(0) = 0x04;
+  std::ranges::copy(hex(kYAtXZero), same_point.begin() + 33);
+  EXPECT_EQ(name(verify(same_point, "sample", sig_sample())), name(EKI_ERR_AUTH_FAILED))
+      << "(0, y) is a point of the curve";
+  std::ranges::copy(p, same_point.begin() + 1);
+  EXPECT_EQ(name(verify(same_point, "sample", sig_sample())), name(EKI_ERR_INVALID_ARGUMENT))
+      << "x = p, the y of (0, y)";
 }
 
 // §4.4: `r = 0`; `s = n` → AUTH_FAILED (also s = 0, r = n, 2^256 - 1).

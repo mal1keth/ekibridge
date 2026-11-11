@@ -283,7 +283,6 @@ dependencies = [
  "poly1305",
  "secrecy",
  "sha2",
- "subtle",
  "zeroize",
 ]
 

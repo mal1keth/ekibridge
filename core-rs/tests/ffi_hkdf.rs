@@ -1,4 +1,4 @@
-//! `eki_hkdf_sha256` through the C ABI (lesson L3).
+//! `eki_hkdf_sha256` through the C ABI.
 //!
 //! Vectors: RFC 5869 A.1–A.3 (the SHA-256 cases). Rows: plan §4.4 `hkdf`; the per-function
 //! sequence and the zero-on-error rule for variable-length outputs from §4.2.
@@ -245,7 +245,8 @@ fn null_pointers() {
 }
 
 proptest! {
-    // No regression files: these run against stubs until the lesson lands.
+    // Failure persistence is off: a failing run prints the shrunk input, and a case worth keeping
+    // becomes a fixed test in this file.
     #![proptest_config(ProptestConfig {
         cases: 64,
         failure_persistence: None,
@@ -253,6 +254,7 @@ proptest! {
     })]
 
     #[test]
+    #[cfg_attr(miri, ignore = "property test: too slow to interpret")]
     fn output_length_is_honoured_and_prefix_stable(
         ikm in proptest::collection::vec(any::<u8>(), 1..=64),
         salt in proptest::collection::vec(any::<u8>(), 0..=64),

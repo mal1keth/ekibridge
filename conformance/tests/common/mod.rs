@@ -329,7 +329,7 @@ impl Rng {
 }
 
 /// Counts `EKI_OK` results per library so a differential run that never succeeded (both
-/// libraries stubbed, or both rejecting every input) is reported instead of passing vacuously.
+/// libraries rejecting every input) is reported instead of passing vacuously.
 #[derive(Default)]
 pub struct OkCount {
     pub a: usize,

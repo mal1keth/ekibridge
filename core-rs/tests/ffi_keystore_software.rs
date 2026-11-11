@@ -1,4 +1,4 @@
-//! The software key store through the C ABI (lesson L6).
+//! The software key store through the C ABI.
 //!
 //! Rows: plan §4.4 `ks_open` and every store row; §4.2 sequences, labels, outputs on error,
 //! last error and thread safety; §4.3 "Software". The scenarios shared with the PKCS#11 suite
@@ -234,7 +234,8 @@ fn printable_label() -> impl Strategy<Value = String> {
 }
 
 proptest! {
-    // No regression files: these run against stubs until the lesson lands.
+    // Failure persistence is off: a failing run prints the shrunk input, and a case worth keeping
+    // becomes a fixed test in this file.
     #![proptest_config(ProptestConfig {
         cases: 32,
         failure_persistence: None,
@@ -242,6 +243,7 @@ proptest! {
     })]
 
     #[test]
+    #[cfg_attr(miri, ignore = "property test: too slow to interpret")]
     fn wrap_unwrap_preserves_the_key(
         text in printable_label(),
         id_bytes in proptest::array::uniform16(any::<u8>()),

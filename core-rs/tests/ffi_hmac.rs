@@ -1,4 +1,4 @@
-//! `eki_hmac_sha256` and `eki_hmac_sha256_verify` through the C ABI (lesson L1).
+//! `eki_hmac_sha256` and `eki_hmac_sha256_verify` through the C ABI.
 //!
 //! Vectors: RFC 4231 §4.2–§4.8, the HMAC-SHA-256 lines. Test case 5 publishes only the first
 //! 16 bytes of the tag, so it is compared as a prefix and left out of the `verify` tests.

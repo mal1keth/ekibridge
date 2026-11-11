@@ -3,10 +3,14 @@
 //! written by one library verified and continued by the other, tampering, and the
 //! `eki_ks_open_v2` rows that need a file.
 //!
-//! The harness parses every record and checks its shape, its fields and the chaining of `prev`
-//! to the previous `hash` as text. It does not recompute SHA-256 itself (the conformance crate has
-//! no hash dependency): that a hash is right is shown by the other library's `eki_audit_verify`
-//! accepting the chain with the writer's head as `expected_head`.
+//! The harness parses every record and checks its shape, its fields, the chaining of `prev` to
+//! the previous `hash` and the hash itself (SHA-256, contract section 10, amendment 14). With the
+//! same hash it forges chains whose hashes are all correct around one record that breaks another
+//! rule, so that only that rule can reject them.
+//!
+//! Log files are named after the role of the library (`cpp` for `EKI_CPP_LIB`, `rs` for
+//! `EKI_RS_LIB`), never after the library file: a self-check with both variables naming one file
+//! still gives each run its own log.
 
 mod common;
 
@@ -22,6 +26,7 @@ use ekicore_conformance::{
     In, KsConfig, KsConfigV2, Lib, PREFILL_U32, PREFILL_U64, Store, eki_key_id, prefill_array,
     prefill_key_id, prefill_key_info, prefill_key_info_v2,
 };
+use sha2::{Digest, Sha256};
 
 /// Every `op` value of §5.
 const OPS: [&str; 14] = [
@@ -72,6 +77,16 @@ impl TempDir {
 impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The role of `lib` in the pair, for file names: `cpp` for the library `EKI_CPP_LIB` names,
+/// `rs` for the one `EKI_RS_LIB` names. Both can be the same file in a self-check.
+fn role(lib: &Lib) -> &'static str {
+    if std::ptr::eq(lib, &common::libs().0) {
+        "cpp"
+    } else {
+        "rs"
     }
 }
 
@@ -270,6 +285,16 @@ fn now_seconds() -> i64 {
         .map_or(0, |d| d.as_secs() as i64)
 }
 
+/// The part of a line that its hash covers: everything before `,"hash":` (§5).
+fn covered(line: &str) -> &str {
+    line.rfind(",\"hash\":").map_or(line, |end| &line[..end])
+}
+
+/// The `hash` of a record whose covered part is `covered`: SHA-256, lowercase hex.
+fn record_hash(covered: &str) -> String {
+    hex::encode(Sha256::digest(covered.as_bytes()))
+}
+
 /// Parses one line (without its `\n`) with the exact shape of §5.
 fn parse_record(line: &str) -> Result<Record, String> {
     let mut rest = line;
@@ -311,6 +336,9 @@ fn parse_record(line: &str) -> Result<Record, String> {
             return Err(format!("{name} {value:?} is not 64 lowercase hex"));
         }
     }
+    if hash != record_hash(covered(line)) {
+        return Err("hash is not the SHA-256 of the line before `,\"hash\":`".to_owned());
+    }
     Ok(Record {
         seq,
         time,
@@ -323,8 +351,8 @@ fn parse_record(line: &str) -> Result<Record, String> {
     })
 }
 
-/// Parses a whole log and checks what the harness can check without SHA-256: every line has the
-/// shape of §5 and at most 512 bytes, `seq` runs from 1, `prev` is the previous `hash` (64 zeros
+/// Parses a whole log and checks it as §5 describes: every line has the shape of §5, a correct
+/// `hash` and at most 512 bytes, `seq` runs from 1, `prev` is the previous `hash` (64 zeros
 /// first), and the file ends with `\n`.
 fn parse_log(bytes: &[u8]) -> Result<Vec<Record>, String> {
     let text = std::str::from_utf8(bytes).map_err(|e| format!("not UTF-8: {e}"))?;
@@ -667,7 +695,7 @@ fn scripted_log_is_exact_and_verifies_in_both() {
         let dir = TempDir::new("scripted");
         for (x, y) in [(a, b), (b, a)] {
             let ap = Approvers::new(y, 2)?;
-            let path = dir.file(&format!("{}.log", x.name()));
+            let path = dir.file(&format!("{}.log", role(x)));
             let started = now_seconds();
             let script = write_full_log(r, x, &ap, &path)?;
             let finished = now_seconds();
@@ -716,7 +744,7 @@ fn scripted_log_is_exact_and_verifies_in_both() {
                         x.name()
                     )
                 });
-                let cut = dir.file(&format!("{}-cut-{seq}.log", x.name()));
+                let cut = dir.file(&format!("{}-cut-{seq}.log", role(x)));
                 write(&cut, &prefix_lines(&bytes, *seq as usize));
                 verify_ok(
                     r,
@@ -743,7 +771,7 @@ fn log_continued_by_the_other_library() {
     run("audit::log_continued_by_the_other_library", |r| {
         let dir = TempDir::new("continued");
         for (x, y) in [(a, b), (b, a)] {
-            let path = dir.file(&format!("{}-then-{}.log", x.name(), y.name()));
+            let path = dir.file(&format!("{}-then-{}.log", role(x), role(y)));
             let mut expected = write_short_log(x, &path)?;
             let n1 = expected.len() as u64;
             verify_ok(r, y, "the other library verifies", &path, None, n1);
@@ -794,7 +822,7 @@ fn verify_error_matrix() {
     run("audit::verify_error_matrix", |r| {
         let dir = TempDir::new("matrix");
         for writer in [a, b] {
-            let path = dir.file(&format!("{}.log", writer.name()));
+            let path = dir.file(&format!("{}.log", role(writer)));
             let n = write_short_log(writer, &path)?.len() as u64;
             let records = records_of(writer, &path)?;
             let head = records.last().map(Record::hash_bytes).unwrap_or([0; 32]);
@@ -863,7 +891,7 @@ fn tampering_is_detected_by_both() {
     run("audit::tampering_is_detected_by_both", |r| {
         let dir = TempDir::new("tamper");
         for writer in [a, b] {
-            let path = dir.file(&format!("{}.log", writer.name()));
+            let path = dir.file(&format!("{}.log", role(writer)));
             write_short_log(writer, &path)?;
             let bytes = read(&path)?;
             let records = records_of(writer, &path)?;
@@ -1001,6 +1029,143 @@ fn tampering_is_detected_by_both() {
     });
 }
 
+/// Contract section 10, amendments 14 and 15: chains whose every `prev` and `hash` is correct,
+/// around one record that breaks another rule of §5 (a wrong `seq`, an over-long line, a status
+/// outside 0..=12, an unknown `op`, a `time` that names no UTC second), fail verification in both
+/// libraries. Rows with an unusual but valid value pass, and the unchanged fields rebuild the
+/// log byte for byte, which shows that the harness forges the chain as the libraries hash it.
+#[test]
+fn forged_chains_with_correct_hashes() {
+    let Some((a, b)) = common::setup("audit::forged_chains_with_correct_hashes") else {
+        return;
+    };
+    run("audit::forged_chains_with_correct_hashes", |r| {
+        let dir = TempDir::new("forged");
+        let long_key2 = "ab".repeat(240);
+        // (row, index of the record changed, field, value, accepted)
+        let rows: [(&str, usize, &str, &str, bool); 27] = [
+            ("seq 3 written as 4", 2, "seq", "4", false),
+            ("seq 3 written as 2", 2, "seq", "2", false),
+            ("seq 3 written as 03", 2, "seq", "03", false),
+            ("seq 1 written as 0", 0, "seq", "0", false),
+            ("key2 of 480 hex digits", 2, "key2", &long_key2, false),
+            ("status 13", 2, "status", "13", false),
+            ("status 99", 2, "status", "99", false),
+            ("status -1", 2, "status", "-1", false),
+            ("status 012", 2, "status", "012", false),
+            ("op export", 2, "op", "export", false),
+            ("op Generate", 2, "op", "Generate", false),
+            ("op empty", 2, "op", "", false),
+            ("time 2026-02-30", 2, "time", "2026-02-30T12:00:00Z", false),
+            ("time 2025-02-29", 2, "time", "2025-02-29T12:00:00Z", false),
+            ("time 2100-02-29", 2, "time", "2100-02-29T12:00:00Z", false),
+            ("time 2026-04-31", 2, "time", "2026-04-31T12:00:00Z", false),
+            ("time month 13", 2, "time", "2026-13-01T12:00:00Z", false),
+            ("time day 00", 2, "time", "2026-11-00T12:00:00Z", false),
+            ("time hour 24", 2, "time", "2026-11-11T24:00:00Z", false),
+            ("time minute 60", 2, "time", "2026-11-11T12:60:00Z", false),
+            ("time second 60", 2, "time", "2026-11-11T12:00:60Z", false),
+            ("time before 1970", 2, "time", "1969-12-31T23:59:59Z", false),
+            ("time 2024-02-29", 2, "time", "2024-02-29T12:00:00Z", true),
+            ("time 2000-02-29", 2, "time", "2000-02-29T00:00:00Z", true),
+            ("time 1970-01-01", 2, "time", "1970-01-01T00:00:00Z", true),
+            ("status 12", 2, "status", "12", true),
+            ("op get_public_key", 2, "op", "get_public_key", true),
+        ];
+        for writer in [a, b] {
+            let path = dir.file(&format!("{}.log", role(writer)));
+            write_short_log(writer, &path)?;
+            let bytes = read(&path)?;
+            let records = records_of(writer, &path)?;
+            let fields: Vec<Fields> = records.iter().map(Fields::of).collect();
+            r.check(chain(&fields) == bytes, || {
+                format!(
+                    "harness: the log of {} is not rebuilt byte for byte from its fields",
+                    writer.name()
+                )
+            });
+            let probe = dir.file("probe.log");
+            for (row, index, field, value, accepted) in &rows {
+                let mut forged = fields.clone();
+                forged[*index].set(field, value);
+                let content = chain(&forged);
+                if *field == "key2" {
+                    let longest = content.split(|&c| c == b'\n').map(<[u8]>::len).max();
+                    r.check(longest.unwrap_or(0) + 1 > 512, || {
+                        format!("harness: {row}: the line is not longer than 512 bytes")
+                    });
+                }
+                write(&probe, &content);
+                let ctx = format!("log of {}, forged: {row}", writer.name());
+                for lib in [a, b] {
+                    if *accepted {
+                        verify_ok(r, lib, &ctx, &probe, None, fields.len() as u64);
+                    } else {
+                        verify_fails(r, lib, &ctx, &probe, None, EKI_ERR_AUTH_FAILED);
+                    }
+                }
+            }
+        }
+        Ok(())
+    });
+}
+
+/// The fields of one record as text, for forged chains: `prev` and `hash` are computed when the
+/// chain is written.
+#[derive(Clone, Debug)]
+struct Fields {
+    seq: String,
+    time: String,
+    op: String,
+    key: String,
+    key2: String,
+    status: String,
+}
+
+impl Fields {
+    fn of(record: &Record) -> Self {
+        Self {
+            seq: record.seq.to_string(),
+            time: record.time.clone(),
+            op: record.op.clone(),
+            key: record.key.clone(),
+            key2: record.key2.clone(),
+            status: record.status.to_string(),
+        }
+    }
+
+    fn set(&mut self, field: &str, value: &str) {
+        let slot = match field {
+            "seq" => &mut self.seq,
+            "time" => &mut self.time,
+            "op" => &mut self.op,
+            "key" => &mut self.key,
+            "key2" => &mut self.key2,
+            "status" => &mut self.status,
+            _ => panic!("harness: no field {field}"),
+        };
+        *slot = value.to_owned();
+    }
+}
+
+/// The log of `records` in the byte-exact form of §5, chained from 64 zeros with the `prev` and
+/// `hash` each line needs.
+fn chain(records: &[Fields]) -> Vec<u8> {
+    let mut prev = ZERO_HASH.to_owned();
+    let mut out = String::new();
+    for f in records {
+        let covered = format!(
+            "{{\"seq\":{},\"time\":\"{}\",\"op\":\"{}\",\"key\":\"{}\",\"key2\":\"{}\",\"status\":{},\
+             \"prev\":\"{prev}\"",
+            f.seq, f.time, f.op, f.key, f.key2, f.status
+        );
+        let hash = record_hash(&covered);
+        out.push_str(&format!("{covered},\"hash\":\"{hash}\"}}\n"));
+        prev = hash;
+    }
+    out.into_bytes()
+}
+
 /// The `eki_ks_open_v2` rows that need a file (§4, §5, §7), and `eki_ks_audit_head` without a
 /// log: a log with a flipped byte, a log locked by an open handle of either library, a log in a
 /// directory that does not exist, an empty existing file.
@@ -1030,7 +1195,7 @@ fn open_v2_audit_rows() {
             }
 
             // A log with one byte flipped: AUTH_FAILED, *out NULL, the file unchanged.
-            let path = dir.file(&format!("{}-flipped.log", lib.name()));
+            let path = dir.file(&format!("{}-flipped.log", role(lib)));
             write_short_log(lib, &path)?;
             let mut bytes = read(&path)?;
             let i = bytes.len() / 2;
@@ -1059,7 +1224,7 @@ fn open_v2_audit_rows() {
             }
 
             // A log held by an open handle: a second handle of either library fails to open.
-            let path = dir.file(&format!("{}-locked.log", lib.name()));
+            let path = dir.file(&format!("{}-locked.log", role(lib)));
             let cfg = KsConfigV2::software().with_audit_log(&path);
             let holder = open_v2(lib, &cfg)?;
             for opener in [a, b] {
@@ -1093,7 +1258,7 @@ fn open_v2_audit_rows() {
             );
 
             // An existing empty file is a valid log with 0 records: the chain starts at 1.
-            let path = dir.file(&format!("{}-empty.log", lib.name()));
+            let path = dir.file(&format!("{}-empty.log", role(lib)));
             write(&path, b"");
             let st = open_v2(lib, &KsConfigV2::software().with_audit_log(&path))?;
             let (_, seq) = audit_head(&st)?;

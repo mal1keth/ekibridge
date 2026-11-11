@@ -248,7 +248,7 @@ impl Backend for Software {
         // `hmac_sha256_verify` compares in constant time (the `hmac` crate's `verify_slice`).
         match hmac::hmac_sha256_verify(key, msg, tag) {
             Ok(()) => Ok(()),
-            Err(Error::AuthFailed) => Err(BackendError::AuthFailed),
+            Err(Error::AuthFailed) => Err(BackendError::AuthFailed(String::new())),
             Err(_) => Err(BackendError::Internal(
                 "HMAC-SHA256 rejected a 32-byte key or tag",
             )),
@@ -272,7 +272,7 @@ impl Backend for Software {
     ) -> BackendResult<()> {
         let secret = match keywrap::unwrap(self.secret(kek, KeyAlg::Aes256)?, blob) {
             Ok(secret) => secret,
-            Err(Error::AuthFailed) => return Err(BackendError::AuthFailed),
+            Err(Error::AuthFailed) => return Err(BackendError::AuthFailed(String::new())),
             Err(_) => return Err(BackendError::Internal("AES key unwrap failed on sizes")),
         };
         let material = Material::from_secret(alg, secret)?;
@@ -361,7 +361,7 @@ mod tests {
         let copy = label("copy");
         assert_eq!(
             store.unwrap(&KEK, &blob, KeyAlg::HmacSha256, &copy, &COPY),
-            Err(BackendError::AuthFailed)
+            Err(BackendError::AuthFailed(String::new()))
         );
         blob[0] ^= 1;
         assert_eq!(
@@ -442,7 +442,7 @@ mod tests {
             tag[31] ^= 1;
             assert_eq!(
                 store.hmac_sha256_verify(&MAC, msg, &tag),
-                Err(BackendError::AuthFailed)
+                Err(BackendError::AuthFailed(String::new()))
             );
         }
         assert_eq!(

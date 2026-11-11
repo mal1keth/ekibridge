@@ -35,6 +35,7 @@
 
 namespace {
 
+using eki_test::all_zero;
 using eki_test::bytes;
 using eki_test::info_is;
 using eki_test::info_zero;
@@ -643,6 +644,58 @@ TEST_F(FfiKeystorePkcs11, ForeignObjectTakesTheIdAndCanBeDestroyed) {
   info = prefilled_info();
   EXPECT_EQ(name(eki_ks_get_info(store().get(), &id, &info)), name(EKI_ERR_KEY_NOT_FOUND));
   EXPECT_EQ(name(eki_ks_destroy(store().get(), &id)), name(EKI_ERR_KEY_NOT_FOUND));
+}
+
+// ks_wrap checks that both ids exist before it describes either (plan 4.2): a foreign kek with a
+// missing key is KEY_NOT_FOUND, and a foreign object is a backend failure only at the step that
+// needs its algorithm, after the type check of the kek.
+TEST_F(FfiKeystorePkcs11, WrapChecksBothIdsBeforeDescribingAForeignObject) {
+  ASSERT_TRUE(open_store());
+  RawToken raw;
+  ASSERT_TRUE(raw.open(token()));
+  const eki_key_id foreign = raw_id('f');
+  const eki_key_id missing = raw_id('n');
+  const std::array<std::uint8_t, 32> value{};
+  store().track(foreign);
+  ASSERT_TRUE(raw.create_secret(foreign, CKK_AES, "", value));
+
+  scenarios::Blob blob = prefilled<40>();
+  EXPECT_EQ(name(eki_ks_wrap(store().get(), &foreign, &missing, blob.data())),
+            name(EKI_ERR_KEY_NOT_FOUND));
+  EXPECT_TRUE(all_zero(blob));
+
+  eki_key_id kek{};
+  eki_key_id mac{};
+  ASSERT_TRUE(store().generate(EKI_KEY_AES_256, "eki-test kek", kek));
+  ASSERT_TRUE(store().generate(EKI_KEY_HMAC_SHA256, "eki-test hmac", mac));
+  EXPECT_EQ(name(eki_ks_wrap(store().get(), &kek, &missing, blob.data())),
+            name(EKI_ERR_KEY_NOT_FOUND));
+  EXPECT_EQ(name(eki_ks_wrap(store().get(), &foreign, &mac, blob.data())), name(EKI_ERR_BACKEND));
+  EXPECT_FALSE(last_error(store().get()).value_or("").empty());
+  EXPECT_EQ(name(eki_ks_wrap(store().get(), &kek, &foreign, blob.data())), name(EKI_ERR_BACKEND));
+  EXPECT_FALSE(last_error(store().get()).value_or("").empty());
+  EXPECT_EQ(name(eki_ks_wrap(store().get(), &mac, &foreign, blob.data())),
+            name(EKI_ERR_WRONG_KEY_TYPE));
+  ASSERT_TRUE(store().destroy(foreign));
+}
+
+// The token reports a failed integrity check with a code other causes share, so the AUTH_FAILED of
+// unwrap carries the code as its message.
+TEST_F(FfiKeystorePkcs11, FailedUnwrapNamesTheReturnCode) {
+  ASSERT_TRUE(open_store());
+  eki_key_id kek{};
+  eki_key_id mac{};
+  ASSERT_TRUE(store().generate(EKI_KEY_AES_256, "eki-test kek", kek));
+  ASSERT_TRUE(store().generate(EKI_KEY_HMAC_SHA256, "eki-test hmac", mac));
+  scenarios::Blob blob{};
+  ASSERT_TRUE(store().wrap(kek, mac, blob));
+  blob.at(20) = static_cast<std::uint8_t>(blob.at(20) ^ 0x01U);
+  const eki_key_id id = raw_id('u');
+  EXPECT_EQ(name(eki_ks_unwrap(store().get(), &kek, blob.data(), blob.size(), EKI_KEY_HMAC_SHA256,
+                               "eki-test copy", &id)),
+            name(EKI_ERR_AUTH_FAILED));
+  EXPECT_TRUE(last_error(store().get()).value_or("").starts_with("C_UnwrapKey failed: CKR_"))
+      << last_error(store().get()).value_or("");
 }
 
 // A secret key whose CKA_LABEL breaks the label rule is not a key the library can report.

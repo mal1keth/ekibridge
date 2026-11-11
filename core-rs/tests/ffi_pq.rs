@@ -1,9 +1,9 @@
-//! Hybrid X25519 + ML-KEM-768 KEM through the C ABI (lesson L9).
+//! Hybrid X25519 + ML-KEM-768 KEM through the C ABI.
 //!
 //! Rows: plan §4.4 `hybrid` rows and the KEM sequence of §4.2 (NULL checks, then UNSUPPORTED
 //! when not compiled in, then the all-zero X25519 and ML-KEM key checks; decapsulation never
 //! fails). The round-trip tests need `--features pq`; without it the functions must answer
-//! `EKI_ERR_UNSUPPORTED`, which the stubs already do.
+//! `EKI_ERR_UNSUPPORTED`.
 
 mod common;
 
@@ -108,7 +108,7 @@ mod without_pq {
     use super::*;
     use eki_status::EKI_ERR_UNSUPPORTED;
 
-    /// The stubs and the finished library agree on this one: not compiled in → UNSUPPORTED.
+    /// Not compiled in → UNSUPPORTED, after the NULL checks.
     #[test]
     fn unsupported_with_valid_pointers() {
         let mut pk: Pk = [FILL; EKI_HYBRID_PK_LEN];

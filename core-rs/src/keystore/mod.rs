@@ -277,8 +277,10 @@ pub enum BackendError {
     Failed(String),
     /// The wrapped key failed the RFC 3394 integrity check, or the HMAC tag does not match:
     /// `EKI_ERR_AUTH_FAILED`. Only [`Backend::unwrap`] and [`Backend::hmac_sha256_verify`]
-    /// report it.
-    AuthFailed,
+    /// report it. The text, empty when there is nothing to add, becomes the last-error message:
+    /// a token reports a failed integrity check with a return code that other causes share,
+    /// so its unwrap names the `CKR_*` code.
+    AuthFailed(String),
     /// A precondition stated on the method did not hold: `EKI_ERR_INTERNAL`.
     Internal(&'static str),
 }
@@ -572,7 +574,7 @@ impl BackendConfig {
             Self::Pkcs11(config) => match pkcs11::Pkcs11Backend::open(config) {
                 Ok(backend) => Ok(Box::new(backend)),
                 Err(BackendError::Internal(_)) => Err(Error::Internal),
-                Err(BackendError::Failed(_) | BackendError::AuthFailed) => Err(Error::Backend),
+                Err(BackendError::Failed(_) | BackendError::AuthFailed(_)) => Err(Error::Backend),
             },
         }
     }
@@ -1025,7 +1027,10 @@ impl Store {
         if let Err(error) = self.backend.destroy(id) {
             let reason = match error {
                 BackendError::Failed(text) => text,
-                BackendError::AuthFailed => "authentication failure".to_owned(),
+                BackendError::AuthFailed(text) if text.is_empty() => {
+                    "authentication failure".to_owned()
+                }
+                BackendError::AuthFailed(text) => text,
                 BackendError::Internal(text) => text.to_owned(),
             };
             self.last_error
@@ -1043,7 +1048,8 @@ impl Store {
     }
 
     /// The error for a backend result. A backend failure's text becomes the last-error message,
-    /// a generic one when the backend gave none; an internal failure's text too.
+    /// a generic one when the backend gave none; an internal failure's text too, and that of an
+    /// authentication failure, which may be empty.
     fn record<T>(&mut self, result: BackendResult<T>) -> Result<T, Error> {
         match result {
             Ok(value) => Ok(value),
@@ -1051,7 +1057,10 @@ impl Store {
                 Err(self.backend_failure(NO_REASON.to_owned()))
             }
             Err(BackendError::Failed(text)) => Err(self.backend_failure(text)),
-            Err(BackendError::AuthFailed) => Err(Error::AuthFailed),
+            Err(BackendError::AuthFailed(text)) => {
+                self.last_error = text;
+                Err(Error::AuthFailed)
+            }
             Err(BackendError::Internal(text)) => {
                 self.last_error = text.to_owned();
                 Err(Error::Internal)
@@ -1243,7 +1252,7 @@ pub(crate) mod scripted {
             if *tag == [2; EKI_HMAC_SHA256_LEN] {
                 Ok(())
             } else {
-                Err(BackendError::AuthFailed)
+                Err(BackendError::AuthFailed(String::new()))
             }
         }
 
@@ -1261,7 +1270,7 @@ pub(crate) mod scripted {
         ) -> BackendResult<()> {
             self.outcome()?;
             if self.reject_blobs {
-                return Err(BackendError::AuthFailed);
+                return Err(BackendError::AuthFailed(String::new()));
             }
             self.add(alg, label, id);
             Ok(())

@@ -370,7 +370,7 @@ impl Backend for Pkcs11Backend {
         {
             Ok(()) => Ok(()),
             Err(CkError::Pkcs11(RvError::SignatureInvalid | RvError::SignatureLenRange, _)) => {
-                Err(BackendError::AuthFailed)
+                Err(BackendError::AuthFailed(String::new()))
             }
             Err(error) => Err(failure(error)),
         }
@@ -410,10 +410,11 @@ impl Backend for Pkcs11Backend {
         let template = secret_key_template(alg, label, id)?;
         // Every failure here counts as a failed integrity check (plan 4.3, return-code mapping):
         // SoftHSM2 reports a wrong RFC 3394 check value as CKR_GENERAL_ERROR, which cannot be
-        // told apart from other causes. The store has checked everything else by now.
+        // told apart from other causes, so the message names the code. The store has checked
+        // everything else by now.
         self.session
             .unwrap_key(&Mechanism::AesKeyWrap, wrapping.key, blob, &template)
-            .map_err(|_| BackendError::AuthFailed)?;
+            .map_err(|error| BackendError::AuthFailed(reason(error)))?;
         Ok(())
     }
 
@@ -905,7 +906,13 @@ fn key_pair_templates(label: &Label, id: &KeyId) -> (Vec<Attribute>, Vec<Attribu
 /// A backend failure whose text names the PKCS#11 function and the `CKR_*` code, for example
 /// `C_Login failed: CKR_PIN_INCORRECT`, or says why the module could not be used.
 fn failure(error: CkError) -> BackendError {
-    BackendError::Failed(match error {
+    BackendError::Failed(reason(error))
+}
+
+/// The text of a cryptoki error: the function and the `CKR_*` name, or what kept the call from
+/// reaching the module.
+fn reason(error: CkError) -> String {
+    match error {
         // cryptoki's function names are the C names without their `C_` prefix.
         CkError::Pkcs11(rv, function) => format!("C_{function:?} failed: {}", rv_name(rv)),
         CkError::LibraryLoading(error) => format!("loading the PKCS#11 module failed: {error}"),
@@ -914,7 +921,7 @@ fn failure(error: CkError) -> BackendError {
             "the PKCS#11 module's function list lacks a function this library calls".to_owned()
         }
         other => format!("PKCS#11 call failed: {other}"),
-    })
+    }
 }
 
 /// The `CKR_*` name of a return code; a code without a name prints as `CKR_0x` and at least

@@ -32,8 +32,8 @@ mod with_pkcs11 {
         last_error, prefilled_info, try_open,
     };
     use ekicore_abi::eki_status::{
-        EKI_ERR_BACKEND, EKI_ERR_INVALID_ARGUMENT, EKI_ERR_KEY_EXISTS, EKI_ERR_KEY_NOT_FOUND,
-        EKI_ERR_NULL_POINTER, EKI_OK,
+        EKI_ERR_AUTH_FAILED, EKI_ERR_BACKEND, EKI_ERR_INVALID_ARGUMENT, EKI_ERR_KEY_EXISTS,
+        EKI_ERR_KEY_NOT_FOUND, EKI_ERR_NULL_POINTER, EKI_ERR_WRONG_KEY_TYPE, EKI_OK,
     };
     use ekicore_abi::{
         EKI_KEY_AES_256, EKI_KEY_ECDSA_P256, EKI_KEY_HMAC_SHA256, EKI_KS_PKCS11, eki_key_id,
@@ -637,9 +637,40 @@ mod with_pkcs11 {
             let status = ks::wrap(store.ptr(), Some(&foreign), Some(&missing), Some(&mut out));
             assert_eq!(status, EKI_ERR_KEY_NOT_FOUND);
             assert_eq!(out, [0; 40]);
+            let kek = store.generate(EKI_KEY_AES_256, "eki-test kek");
             let mac = store.generate(EKI_KEY_HMAC_SHA256, "eki-test hmac");
             let status = ks::wrap(store.ptr(), Some(&foreign), Some(&mac), Some(&mut out));
             assert_backend_failure(store, status, "ks_wrap under a foreign kek");
+            // A foreign key is described only after the type check of the kek.
+            let status = ks::wrap(store.ptr(), Some(&kek), Some(&foreign), Some(&mut out));
+            assert_backend_failure(store, status, "ks_wrap of a foreign key");
+            let status = ks::wrap(store.ptr(), Some(&mac), Some(&foreign), Some(&mut out));
+            assert_eq!(status, EKI_ERR_WRONG_KEY_TYPE);
+        });
+    }
+
+    #[test]
+    fn failed_unwrap_names_the_return_code() {
+        // The token reports a failed integrity check with a code other causes share, so the
+        // AUTH_FAILED of unwrap carries the code as its message, as in the C++ library.
+        with_token_store(|_, store| {
+            let kek = store.generate(EKI_KEY_AES_256, "eki-test kek");
+            let mac = store.generate(EKI_KEY_HMAC_SHA256, "eki-test hmac");
+            let mut blob = store.wrap(&kek, &mac);
+            blob[20] ^= 0x01;
+            let id = random_id();
+            let text = label("eki-test copy");
+            let status = ks::unwrap(
+                store.ptr(),
+                Some(&kek),
+                In::Bytes(&blob),
+                EKI_KEY_HMAC_SHA256,
+                text.as_ptr(),
+                Some(&id),
+            );
+            assert_eq!(status, EKI_ERR_AUTH_FAILED);
+            let message = last_error(store.ptr());
+            assert!(message.starts_with("C_UnwrapKey failed: CKR_"), "{message}");
         });
     }
 

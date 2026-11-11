@@ -64,8 +64,6 @@ rust_caller=$(find_file "$target_dir/release" interop-rust-caller "") || {
 
 # ---- run ---------------------------------------------------------------------------------------
 
-stub_seen=0
-
 # run_caller <label> <caller binary> <library>: prints the caller's output, sets $result.
 run_caller() {
   local label=$1 caller=$2 lib=$3 output status=0
@@ -78,7 +76,6 @@ run_caller() {
   else
     result="FAIL (exit $status)"
   fi
-  if grep -q '(EKI_ERR_UNSUPPORTED)' <<<"$output"; then stub_seen=1; fi
 }
 
 run_caller "cpp-caller -> $(basename "$rs_lib")" "$cpp_caller" "$rs_lib"
@@ -93,11 +90,5 @@ echo "    rust-caller (Rust) -> libekicore    (C++):  $rust_result"
 
 if [ "$cpp_result" = PASS ] && [ "$rust_result" = PASS ]; then
   exit 0
-fi
-if [ "$stub_seen" -eq 1 ]; then
-  echo
-  echo "note: EKI_ERR_UNSUPPORTED is what the stubs return. Failures with that status are expected"
-  echo "      until the implementations land; 'PASS version' already shows that each library loads"
-  echo "      and answers through the shared ABI."
 fi
 exit 1

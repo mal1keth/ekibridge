@@ -1,4 +1,4 @@
-//! `eki_aead_seal` and `eki_aead_open` through the C ABI (lesson L4).
+//! `eki_aead_seal` and `eki_aead_open` through the C ABI.
 //!
 //! Vectors: RFC 8439 §2.8.2 and Appendix A.5 (ChaCha20-Poly1305); the GCM specification
 //! (McGrew and Viega, "The Galois/Counter Mode of Operation", revised) test cases 13–16, the
@@ -811,7 +811,8 @@ fn open_ct_len_above_max_is_invalid_and_leaves_pt_out_untouched() {
 // --- round trips --------------------------------------------------------------------------
 
 proptest! {
-    // No regression files: these run against stubs until the lesson lands.
+    // Failure persistence is off: a failing run prints the shrunk input, and a case worth keeping
+    // becomes a fixed test in this file.
     #![proptest_config(ProptestConfig {
         cases: 64,
         failure_persistence: None,
@@ -819,6 +820,7 @@ proptest! {
     })]
 
     #[test]
+    #[cfg_attr(miri, ignore = "property test: too slow to interpret")]
     fn seal_open_round_trip(
         gcm in any::<bool>(),
         key in proptest::array::uniform32(any::<u8>()),

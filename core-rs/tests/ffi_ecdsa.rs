@@ -1,4 +1,4 @@
-//! `eki_ecdsa_p256_verify` through the C ABI (lesson L5).
+//! `eki_ecdsa_p256_verify` through the C ABI.
 //!
 //! Vectors: RFC 6979 A.2.5 (P-256 with SHA-256, messages "sample" and "test"). Rows: plan
 //! §4.4 `ecdsa_verify`; §4.2 sequence (format and parse failures of the public key are
@@ -40,6 +40,9 @@ const N: &str = "ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc63255
 
 /// The field prime `p` of P-256.
 const P: &str = "ffffffff00000001000000000000000000000000ffffffffffffffffffffffff";
+
+/// A `y` with `(0, y)` on P-256: `y^2 = b (mod p)`.
+const Y_AT_X_ZERO: &str = "66485c780e2f83d72433bd5d84a06bb6541c2af31dae871728bf856a174f93f4";
 
 fn verify(public_key: Option<&[u8; 65]>, msg: In, sig: Option<&[u8; 64]>) -> eki_status {
     let pk = public_key.map_or(core::ptr::null(), |k| k.as_ptr());
@@ -142,6 +145,26 @@ fn coordinate_not_below_p_is_invalid() {
         verify(Some(&pk), In::Bytes(b"sample"), Some(&sig)),
         EKI_ERR_INVALID_ARGUMENT,
         "y = p"
+    );
+
+    // The rows above cannot tell "rejects x >= p" from "reduces x mod p and then finds the
+    // point off the curve". (0, y) is a point of the curve, so its key is accepted and the
+    // signature fails; (p, y) is the same point with x written as p, which only a library that
+    // rejects the coordinate turns away as INVALID_ARGUMENT.
+    let y = hex(Y_AT_X_ZERO);
+    let mut pk = [0; 65];
+    pk[0] = 0x04;
+    pk[33..65].copy_from_slice(&y);
+    assert_eq!(
+        verify(Some(&pk), In::Bytes(b"sample"), Some(&sig)),
+        EKI_ERR_AUTH_FAILED,
+        "(0, y) is a point of the curve"
+    );
+    pk[1..33].copy_from_slice(&p);
+    assert_eq!(
+        verify(Some(&pk), In::Bytes(b"sample"), Some(&sig)),
+        EKI_ERR_INVALID_ARGUMENT,
+        "x = p, the y of (0, y)"
     );
 }
 
