@@ -30,9 +30,9 @@ dual_control::find(bytes value) const noexcept {
   if (value.size() != EKI_DESTROY_REQUEST_LEN) {
     return std::nullopt;
   }
-  for (const auto& [id, request] : pending_) {
-    if (CRYPTO_memcmp(request.value.data(), value.data(), value.size()) == 0) {
-      return std::pair{id, request};
+  for (const auto& [id, entry] : pending_) {
+    if (CRYPTO_memcmp(entry.value.data(), value.data(), value.size()) == 0) {
+      return std::pair{id, entry};
     }
   }
   return std::nullopt;
@@ -46,8 +46,8 @@ std::optional<dual_control::pending> dual_control::pending_for(const key_id& id)
   return found->second;
 }
 
-void dual_control::set(const key_id& id, const pending& request) {
-  pending_.insert_or_assign(id, request);
+void dual_control::set(const key_id& id, const pending& entry) {
+  pending_.insert_or_assign(id, entry);
 }
 
 void dual_control::remove(const key_id& id) noexcept {

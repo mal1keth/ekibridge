@@ -603,7 +603,7 @@ private:
     if (result.status != EKI_OK || !label.has_value()) {
       return result;
     }
-    objects.shape = *alg;
+    objects.shape = alg;
     std::optional<key_state> state;
     result = read_state(objects, *alg, state);
     if (result.status != EKI_OK || !state.has_value()) {

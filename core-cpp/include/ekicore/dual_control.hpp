@@ -65,9 +65,9 @@ public:
   // The pending request for id, or nullopt.
   [[nodiscard]] std::optional<pending> pending_for(const key_id& id) const noexcept;
 
-  // Makes request the pending request for id, replacing any earlier one. May throw (allocation)
+  // Makes entry the pending request for id, replacing any earlier one. May throw (allocation)
   // when id has no request yet; then nothing changes.
-  void set(const key_id& id, const pending& request);
+  void set(const key_id& id, const pending& entry);
 
   // Removes the pending request for id, if any.
   void remove(const key_id& id) noexcept;

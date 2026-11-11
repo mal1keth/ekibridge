@@ -188,6 +188,26 @@ Expected rec(std::string op, const eki_key_id* key = nullptr, const eki_key_id* 
   };
 }
 
+// What a call is expected to record, with the ids held by address. A test passes the call and
+// its plan as two arguments of one function, and the order in which arguments are evaluated is
+// unspecified (GCC evaluates the last one first), so an id that the call fills must not be read
+// while the arguments are built. `expected` reads the ids once the call has returned.
+struct Planned {
+  std::string op;
+  const eki_key_id* key = nullptr;
+  const eki_key_id* key2 = nullptr;
+  eki_status status = EKI_OK;
+
+  [[nodiscard]] Expected expected() const {
+    return rec(op, key, key2, status);
+  }
+};
+
+Planned plan(std::string op, const eki_key_id* key = nullptr, const eki_key_id* key2 = nullptr,
+             eki_status status = EKI_OK) {
+  return Planned{.op = std::move(op), .key = key, .key2 = key2, .status = status};
+}
+
 // The seconds a test ran in.
 struct Window {
   std::time_t started = 0;
@@ -325,9 +345,9 @@ TEST(FfiAudit, ScriptedLogRecordsEveryCall) {
     ASSERT_TRUE(
         h.open(widen(software_config(), path.c_str(), approvers.keys(), approvers.count())));
     eki_ks* ks = h.get();
-    const auto logged = [&](eki_status got, Expected expected) {
-      EKI_EXPECT_STATUS(got, expected.status);
-      want.push_back(std::move(expected));
+    const auto logged = [&](eki_status got, const Planned& planned) {
+      EKI_EXPECT_STATUS(got, planned.status);
+      want.push_back(planned.expected());
       Head hash{};
       std::uint64_t seq = 0;
       EKI_EXPECT_STATUS(eki_ks_audit_head(ks, hash.data(), &seq), EKI_OK);
@@ -339,47 +359,47 @@ TEST(FfiAudit, ScriptedLogRecordsEveryCall) {
     eki_key_id mac = prefilled_id();
     eki_key_id ec = prefilled_id();
     eki_key_id none = prefilled_id();
-    logged(eki_ks_generate(ks, EKI_KEY_AES_256, "kek", &kek), rec("generate", &kek));
+    logged(eki_ks_generate(ks, EKI_KEY_AES_256, "kek", &kek), plan("generate", &kek));
     h.track(kek);
-    logged(eki_ks_generate(ks, EKI_KEY_HMAC_SHA256, "mac", &mac), rec("generate", &mac));
+    logged(eki_ks_generate(ks, EKI_KEY_HMAC_SHA256, "mac", &mac), plan("generate", &mac));
     h.track(mac);
-    logged(eki_ks_generate(ks, EKI_KEY_ECDSA_P256, "ec", &ec), rec("generate", &ec));
+    logged(eki_ks_generate(ks, EKI_KEY_ECDSA_P256, "ec", &ec), plan("generate", &ec));
     h.track(ec);
     logged(eki_ks_generate(ks, EKI_KEY_AES_256, "", &none),
-           rec("generate", nullptr, nullptr, EKI_ERR_INVALID_ARGUMENT));
+           plan("generate", nullptr, nullptr, EKI_ERR_INVALID_ARGUMENT));
     logged(eki_ks_generate(ks, 99, "x", &none),
-           rec("generate", nullptr, nullptr, EKI_ERR_INVALID_ARGUMENT));
+           plan("generate", nullptr, nullptr, EKI_ERR_INVALID_ARGUMENT));
 
     lifecycle::Signature sig{};
-    logged(eki_ks_sign(ks, &ec, msg.data(), msg.size(), sig.data()), rec("sign", &ec));
+    logged(eki_ks_sign(ks, &ec, msg.data(), msg.size(), sig.data()), plan("sign", &ec));
     logged(eki_ks_sign(ks, &missing, msg.data(), msg.size(), sig.data()),
-           rec("sign", &missing, nullptr, EKI_ERR_KEY_NOT_FOUND));
+           plan("sign", &missing, nullptr, EKI_ERR_KEY_NOT_FOUND));
     // Failed NULL checks: not logged.
     EKI_EXPECT_STATUS(eki_ks_sign(ks, &ec, msg.data(), msg.size(), nullptr), EKI_ERR_NULL_POINTER);
     EKI_EXPECT_STATUS(eki_ks_rotate(ks, nullptr, &none), EKI_ERR_NULL_POINTER);
     EKI_EXPECT_STATUS(eki_ks_destroy_request(ks, &mac, nullptr), EKI_ERR_NULL_POINTER);
 
     lifecycle::Tag tag{};
-    logged(eki_ks_hmac_sha256(ks, &mac, msg.data(), msg.size(), tag.data()), rec("hmac", &mac));
+    logged(eki_ks_hmac_sha256(ks, &mac, msg.data(), msg.size(), tag.data()), plan("hmac", &mac));
     logged(eki_ks_hmac_sha256_verify(ks, &mac, msg.data(), msg.size(), tag.data(), tag.size()),
-           rec("hmac_verify", &mac));
+           plan("hmac_verify", &mac));
     logged(eki_ks_hmac_sha256_verify(ks, &mac, msg.data(), msg.size(), tag.data(), 31),
-           rec("hmac_verify", &mac, nullptr, EKI_ERR_INVALID_ARGUMENT));
+           plan("hmac_verify", &mac, nullptr, EKI_ERR_INVALID_ARGUMENT));
     lifecycle::PublicKey pk{};
-    logged(eki_ks_get_public_key(ks, &ec, pk.data()), rec("get_public_key", &ec));
+    logged(eki_ks_get_public_key(ks, &ec, pk.data()), plan("get_public_key", &ec));
     lifecycle::Blob blob{};
-    logged(eki_ks_wrap(ks, &kek, &mac, blob.data()), rec("wrap", &mac, &kek));
+    logged(eki_ks_wrap(ks, &kek, &mac, blob.data()), plan("wrap", &mac, &kek));
     const eki_key_id copy = fixed_id(0x42);
     logged(eki_ks_unwrap(ks, &kek, blob.data(), blob.size(), EKI_KEY_HMAC_SHA256, "copy", &copy),
-           rec("unwrap", &copy, &kek));
+           plan("unwrap", &copy, &kek));
     h.track(copy);
     logged(eki_ks_unwrap(ks, &kek, blob.data(), blob.size(), EKI_KEY_HMAC_SHA256, "copy", &copy),
-           rec("unwrap", &copy, &kek, EKI_ERR_KEY_EXISTS));
+           plan("unwrap", &copy, &kek, EKI_ERR_KEY_EXISTS));
     eki_key_id rotated{};
-    logged(h.rotate(mac, rotated), rec("rotate", &mac, &rotated));
+    logged(h.rotate(mac, rotated), plan("rotate", &mac, &rotated));
     eki_key_id again{};
-    logged(h.rotate(mac, again), rec("rotate", &mac, nullptr, EKI_ERR_KEY_STATE));
-    logged(eki_ks_revoke(ks, &copy), rec("revoke", &copy));
+    logged(h.rotate(mac, again), plan("rotate", &mac, nullptr, EKI_ERR_KEY_STATE));
+    logged(eki_ks_revoke(ks, &copy), plan("revoke", &copy));
 
     // Not logged.
     eki_key_info info{};
@@ -390,20 +410,20 @@ TEST(FfiAudit, ScriptedLogRecordsEveryCall) {
     EXPECT_EQ(lifecycle::head_seq(ks), std::optional<std::uint64_t>{want.size()});
 
     // Dual control.
-    logged(eki_ks_destroy(ks, &ec), rec("destroy", &ec, nullptr, EKI_ERR_APPROVAL_REQUIRED));
+    logged(eki_ks_destroy(ks, &ec), plan("destroy", &ec, nullptr, EKI_ERR_APPROVAL_REQUIRED));
     Request request{};
-    logged(eki_ks_destroy_request(ks, &ec, request.data()), rec("destroy_request", &ec));
+    logged(eki_ks_destroy_request(ks, &ec, request.data()), plan("destroy_request", &ec));
     std::uint32_t remaining = 0;
     logged(eki_ks_destroy_approve(ks, request.data(), approvers.key(0).data(),
                                   approvers.sign(0, request, ec).data(), &remaining),
-           rec("destroy_approve", &ec));
+           plan("destroy_approve", &ec));
     const Request unknown{};
     logged(eki_ks_destroy_approve(ks, unknown.data(), approvers.key(0).data(),
                                   approvers.sign(0, request, ec).data(), &remaining),
-           rec("destroy_approve", nullptr, nullptr, EKI_ERR_KEY_NOT_FOUND));
+           plan("destroy_approve", nullptr, nullptr, EKI_ERR_KEY_NOT_FOUND));
     logged(eki_ks_destroy_approve(ks, request.data(), approvers.key(1).data(),
                                   approvers.sign(1, request, ec).data(), &remaining),
-           rec("destroy_approve", &ec));
+           plan("destroy_approve", &ec));
     EXPECT_EQ(remaining, 0U);
   }
   const std::time_t finished = std::time(nullptr);

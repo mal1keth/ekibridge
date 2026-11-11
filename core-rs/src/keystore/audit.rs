@@ -520,11 +520,12 @@ pub fn parse_path(text: &[u8]) -> Result<PathBuf, Error> {
 /// check on the open file can refuse it (docs/ffi-contract.md, "Audit log"). The flag changes
 /// nothing for the reads and writes of a regular file, the only type that passes that check. Only
 /// the constant comes from libc, so no `unsafe` is needed. The WebAssembly build has no such flag
-/// and no FIFO.
+/// and no FIFO. Under Miri the flag is left out: Miri's `open` rejects flags it does not model
+/// (on Linux, "unsupported flags: 0x800"), and the tests that run there open regular files only.
 fn log_options() -> OpenOptions {
-    #[cfg_attr(not(unix), allow(unused_mut))]
+    #[cfg_attr(any(not(unix), miri), allow(unused_mut))]
     let mut options = OpenOptions::new();
-    #[cfg(unix)]
+    #[cfg(all(unix, not(miri)))]
     options.custom_flags(libc::O_NONBLOCK);
     options
 }
