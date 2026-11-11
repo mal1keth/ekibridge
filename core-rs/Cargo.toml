@@ -43,6 +43,10 @@ subtle = { version = "=2.6.1", optional = true }
 x25519-dalek = { version = "=3.0.0", optional = true }
 zeroize = { version = "=1.9.1", features = ["derive"] }
 
+# `O_NONBLOCK` for opening the audit log (and `mkfifo` in the integration tests); Unix only.
+[target.'cfg(unix)'.dependencies]
+libc = "=0.2.191"
+
 [dev-dependencies]
 # Only the timing loop and the JSON estimates are needed; plots and parallel analysis are left out.
 criterion = { version = "=0.8.2", default-features = false, features = ["cargo_bench_support"] }

@@ -63,23 +63,13 @@ fn c_path(path: &Path) -> CString {
     CString::new(path.as_os_str().as_bytes()).expect("path has no NUL")
 }
 
-#[cfg(target_vendor = "apple")]
-type Mode = u16;
-#[cfg(not(target_vendor = "apple"))]
-type Mode = u32;
-
-unsafe extern "C" {
-    /// `mkfifo(3)`: the standard library cannot create a FIFO, and a child process is not an
-    /// option because a process spawned while another test holds a log lock keeps that lock
-    /// until it executes its program.
-    fn mkfifo(path: *const core::ffi::c_char, mode: Mode) -> core::ffi::c_int;
-}
-
-/// Creates a FIFO at `path`.
+/// Creates a FIFO at `path`. The standard library cannot create one, and a child process is not an
+/// option because a process spawned while another test holds a log lock keeps that lock until it
+/// executes its program.
 fn make_fifo(path: &Path) {
     let text = c_path(path);
     // SAFETY: `text` is a live NUL-terminated string that `mkfifo` only reads.
-    let made = unsafe { mkfifo(text.as_ptr(), 0o600) };
+    let made = unsafe { libc::mkfifo(text.as_ptr(), 0o600) };
     assert_eq!(made, 0, "mkfifo: {}", std::io::Error::last_os_error());
 }
 

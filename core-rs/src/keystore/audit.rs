@@ -515,19 +515,22 @@ pub fn parse_path(text: &[u8]) -> Result<PathBuf, Error> {
     Ok(PathBuf::from(path))
 }
 
-/// Whether `path` names something other than a regular file right now (a directory, a device, a
-/// FIFO, a socket). Opening a FIFO for reading waits for a writer. The C++ library avoids that
-/// with `O_NONBLOCK`, which the standard library offers only through a libc binding, so here such
-/// a path is refused before it is opened; a path replaced by a FIFO between this check and the
-/// open still makes the verifier wait (docs/ffi-contract.md, "Known differences"). A path that
-/// does not exist, or cannot be examined, is left to the open that follows, which reports its own
-/// failure.
-fn names_special_file(path: &Path) -> bool {
-    std::fs::metadata(path).is_ok_and(|metadata| !metadata.is_file())
+/// The options of every open of a log file. On Unix the flag `O_NONBLOCK` is set, as in the C++
+/// library, so that opening a FIFO returns at once instead of waiting for a writer and the type
+/// check on the open file can refuse it (docs/ffi-contract.md, "Audit log"). The flag changes
+/// nothing for the reads and writes of a regular file, the only type that passes that check. Only
+/// the constant comes from libc, so no `unsafe` is needed. The WebAssembly build has no such flag
+/// and no FIFO.
+fn log_options() -> OpenOptions {
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut options = OpenOptions::new();
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NONBLOCK);
+    options
 }
 
-/// Whether the open `file` is a regular file. This is the check that decides: the file a path
-/// names can change between the check of the path and the open.
+/// Whether the open `file` is a regular file. This alone decides the type of a log: it is the file
+/// that was opened, whereas what a path names can change at any moment.
 fn is_regular_file(file: &File) -> bool {
     file.metadata().is_ok_and(|metadata| metadata.is_file())
 }
@@ -540,10 +543,10 @@ pub fn verify_file(
     expected_head: Option<&[u8; EKI_AUDIT_HASH_LEN]>,
 ) -> Result<u64, Error> {
     let path = parse_path(path)?;
-    if names_special_file(&path) {
-        return Err(Error::Backend);
-    }
-    let file = File::open(path).map_err(|_| Error::Backend)?;
+    let file = log_options()
+        .read(true)
+        .open(path)
+        .map_err(|_| Error::Backend)?;
     if !is_regular_file(&file) {
         return Err(Error::Backend);
     }
@@ -626,10 +629,7 @@ impl AuditLog {
     /// a regular file; then verified from the start. Nothing is written: a log that fails is left
     /// byte for byte as it was.
     pub fn open(path: &Path) -> Result<Self, OpenError> {
-        if names_special_file(path) {
-            return Err(OpenError::Failed(NOT_REGULAR.to_owned()));
-        }
-        let mut options = OpenOptions::new();
+        let mut options = log_options();
         options.read(true).append(true).create(true);
         // The owner-only mode is a Unix permission; other targets (the WebAssembly build) have none.
         #[cfg(unix)]
@@ -1133,12 +1133,18 @@ mod tests {
                 Err(Error::Backend),
                 "{row}: verify"
             );
-            assert_eq!(
-                AuditLog::open(&path).map(|_| ()),
-                Err(OpenError::Failed(NOT_REGULAR.to_owned())),
+            assert!(
+                matches!(AuditLog::open(&path), Err(OpenError::Failed(_))),
                 "{row}: open"
             );
         }
+        // A directory cannot be opened for writing at all; a device opens, and only the type of
+        // the open file refuses it.
+        assert_eq!(
+            AuditLog::open(Path::new("/dev/null")).map(|_| ()),
+            Err(OpenError::Failed(NOT_REGULAR.to_owned())),
+            "/dev/null: the reason"
+        );
         assert!(is_regular_file(
             &File::create(dir.join("file")).expect("created")
         ));

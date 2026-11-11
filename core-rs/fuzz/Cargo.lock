@@ -320,6 +320,7 @@ dependencies = [
  "getrandom",
  "hkdf",
  "hmac",
+ "libc",
  "ml-kem",
  "p256",
  "poly1305",

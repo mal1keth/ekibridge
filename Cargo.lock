@@ -622,6 +622,7 @@ version = "0.1.0"
 dependencies = [
  "ekicore-abi",
  "hex",
+ "libc",
  "libloading 0.9.0",
  "rand_chacha",
  "rand_core",
@@ -644,6 +645,7 @@ dependencies = [
  "hex",
  "hkdf",
  "hmac",
+ "libc",
  "ml-kem",
  "p256",
  "poly1305",
