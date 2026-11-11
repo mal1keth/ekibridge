@@ -1,0 +1,34 @@
+[package]
+name = "ekicore-wasm"
+description = "WebAssembly build of the ekicore-rs safe API for JavaScript, through wasm-bindgen."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "ekicore_wasm"
+# `cdylib` is the .wasm module that wasm-bindgen post-processes; `rlib` lets the tests in
+# `tests/` link the crate.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ekicore-abi = { path = "../../abi" }
+# The PKCS#11 backend (default feature `pkcs11`) loads a native module with dlopen, which a
+# WebAssembly module cannot do, so it stays out of this build.
+ekicore-rs = { path = "../../core-rs", default-features = false }
+js-sys = "=0.3.107"
+wasm-bindgen = "=0.2.130"
+zeroize = "=1.9.1"
+
+# ekicore-rs draws key ids and nonces from getrandom. On wasm32-unknown-unknown getrandom has no
+# default source and refuses to compile; `wasm_js` selects crypto.getRandomValues of the host
+# (Node or a browser). Feature unification applies it to the copy ekicore-rs uses, so ekicore-rs
+# itself needs no change for this.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "=0.4.3", features = ["wasm_js"] }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "=0.3.80"

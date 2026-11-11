@@ -9,10 +9,11 @@ single C ABI, with a conformance harness that proves the two are interchangeable
 [![conformance](https://github.com/mal1keth/ekibridge/actions/workflows/conformance.yml/badge.svg)](https://github.com/mal1keth/ekibridge/actions/workflows/conformance.yml)
 [![fuzz](https://github.com/mal1keth/ekibridge/actions/workflows/fuzz.yml/badge.svg)](https://github.com/mal1keth/ekibridge/actions/workflows/fuzz.yml)
 [![pq](https://github.com/mal1keth/ekibridge/actions/workflows/pq.yml/badge.svg)](https://github.com/mal1keth/ekibridge/actions/workflows/pq.yml)
+[![bindings](https://github.com/mal1keth/ekibridge/actions/workflows/bindings.yml/badge.svg)](https://github.com/mal1keth/ekibridge/actions/workflows/bindings.yml)
 
 **Status: in progress, started October 2026.** Every exported function is implemented in both
-libraries and passes the conformance harness; the fuzzing campaign and the bindings are still to
-come. The table shows where each module stands.
+libraries and passes the conformance harness; the fuzzing campaign is still to come. The table
+shows where each module stands.
 
 | Module | C++ | Rust | Conformance | Fuzz |
 |---|---|---|---|---|
@@ -28,7 +29,7 @@ come. The table shows where each module stands.
 | Audit log | done | done | passing | planned |
 | Dual control for destroy | done | done | passing | planned |
 | Interop callers | passing | passing | n/a | n/a |
-| Bindings (UniFFI, wasm) | n/a | planned | n/a | n/a |
+| Bindings (UniFFI, wasm) | n/a | done | n/a | n/a |
 
 ## What it is
 
@@ -141,6 +142,20 @@ RUSTFLAGS=$soft MIRIFLAGS='-Zmiri-disable-isolation -Zmiri-no-short-fd-operation
   open_v2_rows get_info_v2_rows no_approver_rows audit_head_rows version status_names
 ```
 
+### Bindings
+
+```sh
+# UniFFI: generate Python, Kotlin and Swift into target/uniffi/, then test the Python binding
+bindings/uniffi/scripts/generate.sh
+bindings/uniffi/scripts/test-python.sh
+
+# wasm-bindgen: tests under Node (the CLI version must equal the wasm-bindgen pin)
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.130 --locked
+CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
+  cargo test -p ekicore-wasm --target wasm32-unknown-unknown
+```
+
 ### SoftHSM2 token for the PKCS#11 tests
 
 ```sh
@@ -171,6 +186,8 @@ scripts/run-conformance.sh --with-pkcs11   # include PKCS#11 (source scripts/sof
 | [`core-cpp/`](core-cpp/) | `libekicore`, C++20 on OpenSSL 3, with GoogleTest unit tests |
 | [`conformance/`](conformance/) | harness that loads both libraries and compares them, plus JSON test vectors |
 | [`interop/`](interop/) | small callers that `dlopen` a library given on the command line |
+| [`bindings/uniffi/`](bindings/uniffi/) | `ekicore-uniffi`: UniFFI bindings (Python tested; Kotlin, Swift generated) over the safe Rust API |
+| [`bindings/wasm/`](bindings/wasm/) | `ekicore-wasm`: the safe Rust API as WebAssembly for JavaScript, through wasm-bindgen |
 | [`scripts/`](scripts/) | header and export checks, SoftHSM2 setup, conformance, benchmarks |
 | [`docs/`](docs/) | contract, threat model, migration plan, benchmarks, findings |
 | [`.github/workflows/`](.github/workflows/) | CI: one workflow per concern |
@@ -196,6 +213,31 @@ scripts/run-conformance.sh --with-pkcs11   # include PKCS#11 (source scripts/sof
   to PKCS#11 `CKM_AES_KEY_WRAP`; algorithm, label and id travel out of band.
 - **One PKCS#11 object mapping.** Both libraries store keys in the token with the same attributes, so
   each can use keys the other created.
+
+## Three ways across the boundary
+
+The same safe Rust functions leave the crate three ways.
+
+**cbindgen, the C ABI** ([`core-rs/src/ffi.rs`](core-rs/src/ffi.rs)). A hand-written `extern "C"`
+layer turns pointers into slices, catches panics and maps errors to `eki_status`; cbindgen only
+writes the header. It gives full control of the ABI: fixed layouts, caller-owned buffers written in
+place without copies, and one header the C++ library implements as well. Every pointer rule is the
+author's, held up by SAFETY comments, Miri, fuzzing and review. It fits a stable contract that any
+language with a C FFI can load, which is what makes the two libraries interchangeable.
+
+**UniFFI** ([`bindings/uniffi/`](bindings/uniffi/)). Proc macros generate the C scaffolding from
+annotated safe Rust, and `uniffi-bindgen` reads the built library to write Python, Kotlin and
+Swift. No pointer handling is written: errors become exceptions, records become classes. A runtime
+and its conventions come along: every argument is serialised and copied, the foreign code must come
+from the same uniffi version as the library, and the exported symbols are UniFFI's, not an ABI a C
+caller would use. It fits shipping one Rust library to mobile apps and scripting languages.
+
+**wasm-bindgen** ([`bindings/wasm/`](bindings/wasm/)). A different target with its own memory
+model: the module has a linear memory of its own and shares no address space with JavaScript, so
+every `Uint8Array` is copied in and every result copied out, and code that needs the operating
+system (PKCS#11, file modes, the system random source) has to be left out or supplied by the host.
+wasm-bindgen generates the JavaScript glue and TypeScript types. It fits browsers, Node and edge
+runtimes, where a native library cannot be loaded at all.
 
 ## Documentation
 

@@ -21,7 +21,9 @@
 
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{self, BufRead, BufReader, Read, Write};
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -48,6 +50,7 @@ const STATUS_MAX: u32 = eki_status::EKI_ERR_APPROVAL_REQUIRED as u32;
 
 /// Mode of a log file this library creates: read and write for the owner only.
 /// cbindgen:ignore
+#[cfg(unix)]
 const LOG_FILE_MODE: u32 = 0o600;
 
 // --- Fields of a record ------------------------------------------------------------------------
@@ -503,7 +506,12 @@ pub fn parse_path(text: &[u8]) -> Result<PathBuf, Error> {
     if !(1..=EKI_AUDIT_PATH_MAX_LEN).contains(&text.len()) {
         return Err(Error::InvalidArgument);
     }
-    Ok(PathBuf::from(std::ffi::OsStr::from_bytes(text)))
+    #[cfg(unix)]
+    let path = std::ffi::OsStr::from_bytes(text);
+    // Outside Unix (the WebAssembly build) a path is a string, so its bytes must be UTF-8.
+    #[cfg(not(unix))]
+    let path = std::str::from_utf8(text).map_err(|_| Error::InvalidArgument)?;
+    Ok(PathBuf::from(path))
 }
 
 /// `eki_audit_verify`: the path format (`INVALID_ARGUMENT`), the file (`BACKEND` when it cannot
@@ -584,16 +592,17 @@ pub struct AuditLog {
 }
 
 impl AuditLog {
-    /// Opens the log at `path` for the life of a handle: opened for appending and created with
-    /// mode 0600 if missing; locked exclusively without waiting (a lock of the open file, which
+    /// Opens the log at `path` for the life of a handle: opened for appending and created if
+    /// missing, on Unix with mode 0600; locked exclusively without waiting (a lock of the open file, which
     /// a second open of the same file in this process does not share); then verified from the
     /// start. Nothing is written: a log that fails is left byte for byte as it was.
     pub fn open(path: &Path) -> Result<Self, OpenError> {
-        let file = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .create(true)
-            .mode(LOG_FILE_MODE)
+        let mut options = OpenOptions::new();
+        options.read(true).append(true).create(true);
+        // The owner-only mode is a Unix permission; other targets (the WebAssembly build) have none.
+        #[cfg(unix)]
+        options.mode(LOG_FILE_MODE);
+        let file = options
             .open(path)
             .map_err(|error| OpenError::Failed(format!("opening the audit log failed: {error}")))?;
         file.try_lock().map_err(|error| {

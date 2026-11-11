@@ -1,10 +1,11 @@
 name: bindings
 
-# Placeholder: the UniFFI and wasm-bindgen bindings and their tests arrive with the bindings
-# package, which also turns this workflow on for pushes and pull requests.
+# The two bindings over the safe Rust API. UniFFI: builds ekicore-uniffi, generates Python, Kotlin
+# and Swift with the crate's own uniffi-bindgen (Kotlin and Swift are checked for the expected
+# declarations, not compiled) and runs the Python tests against the built library. wasm-bindgen:
+# builds ekicore-wasm for wasm32-unknown-unknown and runs its tests under Node.
 
-on:
-  workflow_dispatch:
+on: [push, pull_request]
 
 permissions:
   contents: read
@@ -13,11 +14,70 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  CARGO_TERM_COLOR: always
+  # Must equal the wasm-bindgen pin in bindings/wasm/Cargo.toml: the CLI refuses a module built
+  # by another version of the crate.
+  WASM_BINDGEN_VERSION: 0.2.130
+
 jobs:
-  bindings:
-    name: bindings
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
+  uniffi:
+    name: uniffi (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
-      - name: not yet
-        run: echo "bindings/ (UniFFI and wasm) is not part of the repository yet; nothing to build"
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: tool versions
+        run: python3 --version
+      - name: build
+        run: cargo build -p ekicore-uniffi
+      - name: generate Python, Kotlin and Swift bindings
+        run: bindings/uniffi/scripts/generate.sh
+      - name: Python tests
+        run: bindings/uniffi/scripts/test-python.sh
+
+  wasm:
+    name: wasm
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm
+      - name: install wasm-bindgen-cli
+        run: cargo install wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION" --locked
+      - name: tool versions
+        run: |
+          node --version
+          wasm-bindgen --version
+      - name: build
+        run: cargo build -p ekicore-wasm --target wasm32-unknown-unknown
+      # --no-deps: on a 32-bit target core-rs trips clippy::absurd_extreme_comparisons (its AEAD
+      # length cap saturates at usize::MAX there, as documented); core-rs is linted natively in
+      # rust.yml.
+      - name: clippy
+        run: >-
+          cargo clippy -p ekicore-wasm --no-deps --target wasm32-unknown-unknown --all-targets --
+          -D warnings -W clippy::undocumented_unsafe_blocks
+      - name: tests under Node
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+        run: cargo test -p ekicore-wasm --target wasm32-unknown-unknown
+      - name: JavaScript package
+        run: >-
+          wasm-bindgen --target nodejs --out-dir target/wasm-pkg
+          target/wasm32-unknown-unknown/debug/ekicore_wasm.wasm

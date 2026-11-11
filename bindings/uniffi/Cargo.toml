@@ -1,0 +1,29 @@
+[package]
+name = "ekicore-uniffi"
+description = "UniFFI bindings (Python, Kotlin, Swift) over the safe API of ekicore-rs."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "ekicore_uniffi"
+# `cdylib` is the library the generated foreign code loads; `rlib` lets `cargo test` link the
+# Rust unit tests.
+crate-type = ["cdylib", "rlib"]
+
+# The bindings generator, built from the same uniffi version as the scaffolding, so no globally
+# installed uniffi-bindgen is needed and the two cannot drift apart.
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+
+[dependencies]
+ekicore-abi = { path = "../../abi" }
+# The PKCS#11 backend is not part of this API; leaving the default feature off keeps cryptoki out
+# of the library the foreign code loads.
+ekicore-rs = { path = "../../core-rs", default-features = false }
+uniffi = { version = "=0.32.2", features = ["cli"] }
+zeroize = "=1.9.1"

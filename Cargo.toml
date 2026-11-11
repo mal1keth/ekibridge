@@ -1,6 +1,13 @@
 [workspace]
 resolver = "3"
-members = ["abi", "core-rs", "conformance", "interop/rust-caller"]
+members = [
+  "abi",
+  "core-rs",
+  "conformance",
+  "interop/rust-caller",
+  "bindings/uniffi",
+  "bindings/wasm",
+]
 exclude = ["core-rs/fuzz"]
 
 [workspace.package]

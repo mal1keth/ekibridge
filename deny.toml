@@ -5,7 +5,13 @@
 all-features = true
 
 [advisories]
-# Uses the default RustSec advisory database; no advisories are ignored.
+# Uses the default RustSec advisory database. One advisory is ignored, for the reason given below.
+ignore = [
+  # basic-toml is unmaintained; the advisory reports no vulnerability. It is a dependency of
+  # askama's derive macro, the template engine of uniffi_bindgen, so it runs only at compile time
+  # and is linked into no library. The current askama and uniffi releases still depend on it.
+  { id = "RUSTSEC-2026-0374", reason = "compile-time dependency of uniffi_bindgen via askama" },
+]
 
 [licenses]
 allow = [
