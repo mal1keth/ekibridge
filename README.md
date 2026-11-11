@@ -12,24 +12,24 @@ single C ABI, with a conformance harness that checks the two are interchangeable
 [![bindings](https://github.com/mal1keth/ekibridge/actions/workflows/bindings.yml/badge.svg)](https://github.com/mal1keth/ekibridge/actions/workflows/bindings.yml)
 
 **Status: in progress, started October 2026.** Every exported function is implemented in both
-libraries and passes the conformance harness; the fuzzing campaign is still to come. No release is
-tagged yet. The ABI is at version 2, which added key lifecycle states, the audit log and dual
+libraries and passes the conformance harness, and a first fuzzing campaign of both libraries found
+nothing ([findings](docs/findings.md)). No release is tagged yet. The ABI is at version 2, which added key lifecycle states, the audit log and dual
 control of destroy. The table shows where each module stands; benchmark results are not recorded
 yet.
 
 | Module | C++ | Rust | Conformance | Fuzz |
 |---|---|---|---|---|
 | ABI, build, CI | done | done | metadata module | n/a |
-| HMAC-SHA256 | done | done | passing | planned |
-| HKDF-SHA256 | done | done | passing | planned |
-| AEAD (AES-256-GCM, ChaCha20-Poly1305) | done | done | passing | planned |
-| ECDSA P-256 verify | done | done | passing | planned |
-| Key store, software backend | done | done | passing | planned |
-| Key store, PKCS#11 backend | done | done | passing | planned |
-| Hybrid KEM (X25519 + ML-KEM-768) | done | done | passing | planned |
-| Key lifecycle | done | done | passing | planned |
-| Audit log | done | done | passing | planned |
-| Dual control for destroy | done | done | passing | planned |
+| HMAC-SHA256 | done | done | passing | fuzzed |
+| HKDF-SHA256 | done | done | passing | fuzzed |
+| AEAD (AES-256-GCM, ChaCha20-Poly1305) | done | done | passing | fuzzed |
+| ECDSA P-256 verify | done | done | passing | fuzzed |
+| Key store, software backend | done | done | passing | fuzzed |
+| Key store, PKCS#11 backend | done | done | passing | argument checks only |
+| Hybrid KEM (X25519 + ML-KEM-768) | done | done | passing | fuzzed |
+| Key lifecycle | done | done | passing | fuzzed |
+| Audit log | done | done | passing | fuzzed |
+| Dual control for destroy | done | done | passing | fuzzed |
 | Interop callers | passing | passing | n/a | n/a |
 | Bindings (UniFFI, wasm) | n/a | done | n/a | n/a |
 

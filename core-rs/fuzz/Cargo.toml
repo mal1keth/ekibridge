@@ -14,7 +14,16 @@ cargo-fuzz = true
 # Keeping the crate out matters: it needs nightly and libFuzzer, the workspace builds on stable.
 [workspace]
 
-# The input types live in the library so the fuzz targets and the seed generator share them.
+[features]
+# The library's features, forwarded. `pkcs11` is on, as in the library's default build, so the
+# PKCS#11 configuration checks are fuzzed; no target ever names a module that exists. `pq` turns
+# the hybrid KEM on: `cargo +nightly fuzz build --features pq`.
+default = ["pkcs11"]
+pkcs11 = ["ekicore-rs/pkcs11"]
+pq = ["ekicore-rs/pq"]
+
+# The shared decoding and checks live in a library so the targets and the seed generator share
+# them.
 [lib]
 name = "ekicore_rs_fuzz"
 path = "src/lib.rs"
@@ -22,10 +31,11 @@ test = false
 doc = false
 
 [dependencies]
-arbitrary = { version = "=1.5.0", features = ["derive"] }
 ekicore-abi = { path = "../../abi" }
 ekicore-rs = { path = "..", default-features = false }
 libfuzzer-sys = "=0.4.13"
+# The version ekicore-rs pins; the audit target recomputes record hashes with it.
+sha2 = "=0.11.1"
 
 [dev-dependencies]
 hex = "=0.4.3"
@@ -55,6 +65,27 @@ bench = false
 [[bin]]
 name = "unwrap_blob"
 path = "fuzz_targets/unwrap_blob.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "audit_verify"
+path = "fuzz_targets/audit_verify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hybrid_kem"
+path = "fuzz_targets/hybrid_kem.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ecdsa_sign_verify"
+path = "fuzz_targets/ecdsa_sign_verify.rs"
 test = false
 doc = false
 bench = false

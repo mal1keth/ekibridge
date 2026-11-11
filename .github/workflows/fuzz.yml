@@ -1,7 +1,15 @@
 name: fuzz
 
-# Short fuzzing runs of every target, Rust (cargo-fuzz) and C++ (libFuzzer). Each step skips
-# itself until the fuzz targets exist (added by the fuzzing package).
+# Short fuzzing runs of every target, Rust (cargo-fuzz) and C++ (libFuzzer). Each target runs from
+# its committed seeds for at most 200000 executions or two minutes, whichever comes first: a smoke
+# test that the targets build and hold on the seeds and on what a short run finds, not a campaign
+# (campaigns are recorded in docs/findings.md). New inputs go to a scratch corpus in the runner's
+# temporary directory, so the committed seeds are only read. The targets use the software key
+# store only; no PKCS#11 token is needed.
+#
+# The hybrid KEM targets and ffi_status also run with the KEM compiled in on the Rust side. The
+# C++ KEM needs OpenSSL 3.5, newer than the runner's, so the C++ job builds without it and checks
+# that the KEM functions answer EKI_ERR_UNSUPPORTED with zeroed outputs.
 
 on:
   push:
@@ -20,6 +28,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_FUZZ_VERSION: 0.13.2
+  FUZZ_ARGS: -runs=200000 -max_total_time=120
 
 jobs:
   rust:
@@ -32,24 +41,28 @@ jobs:
         with:
           toolchain: nightly
       - uses: Swatinem/rust-cache@v2
-        if: hashFiles('core-rs/fuzz/Cargo.toml') != ''
         with:
           workspaces: core-rs/fuzz -> target
       - name: install cargo-fuzz
-        if: hashFiles('core-rs/fuzz/Cargo.toml') != ''
         run: cargo install cargo-fuzz --version "$CARGO_FUZZ_VERSION" --locked
       - name: run targets
         run: |
-          if [ ! -d core-rs/fuzz ]; then
-            echo "core-rs/fuzz not present yet; nothing to run"
-            exit 0
-          fi
-          for t in core-rs/fuzz/fuzz_targets/*.rs; do
-            [ -e "$t" ] || continue
-            name=$(basename "$t" .rs)
-            echo "::group::$name"
-            cargo +nightly fuzz run --fuzz-dir core-rs/fuzz "$name" -- -runs=200000 -max_total_time=120
+          run() {
+            features=$1
+            name=$2
+            scratch="$RUNNER_TEMP/corpus$features/$name"
+            mkdir -p "$scratch"
+            echo "::group::$name $features"
+            # shellcheck disable=SC2086 # FUZZ_ARGS holds several libFuzzer flags.
+            cargo +nightly fuzz run --fuzz-dir core-rs/fuzz $features "$name" \
+              "$scratch" "core-rs/fuzz/corpus/$name" -- $FUZZ_ARGS
             echo "::endgroup::"
+          }
+          for name in ffi_status audit_verify unwrap_blob hybrid_kem aead_open hkdf ecdsa_sign_verify; do
+            run "" "$name"
+          done
+          for name in hybrid_kem ffi_status; do
+            run "--features=pq" "$name"
           done
 
   cpp:
@@ -59,36 +72,25 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: install dependencies
-        if: hashFiles('core-cpp/fuzz/CMakeLists.txt') != ''
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build libssl-dev clang libclang-rt-18-dev
       # Older sanitizer runtimes crash at startup under the runner kernel's 32-bit mmap
       # randomisation; 28 bits is the long-standing default and works with every version.
       - name: limit mmap randomisation for sanitizers
-        if: hashFiles('core-cpp/fuzz/CMakeLists.txt') != ''
         run: sudo sysctl -w vm.mmap_rnd_bits=28
-      - name: build and run targets
+      - name: build
         run: |
-          if [ ! -f core-cpp/fuzz/CMakeLists.txt ]; then
-            echo "core-cpp/fuzz not present yet; nothing to run"
-            exit 0
-          fi
           cmake --preset fuzz
           cmake --build --preset fuzz
-          found=0
-          while IFS= read -r bin; do
-            found=1
-            name=$(basename "$bin")
+      - name: run targets
+        run: |
+          for name in fuzz_ffi_status fuzz_audit_verify fuzz_ks_unwrap fuzz_hybrid_kem \
+                      fuzz_aead_open fuzz_hkdf fuzz_ecdsa_sign_verify; do
+            scratch="$RUNNER_TEMP/corpus/$name"
+            mkdir -p "$scratch"
             echo "::group::$name"
-            corpus=()
-            if [ -d "core-cpp/fuzz/corpus/$name" ]; then
-              corpus=("core-cpp/fuzz/corpus/$name")
-            fi
-            "$bin" -runs=200000 "${corpus[@]}"
+            # shellcheck disable=SC2086 # FUZZ_ARGS holds several libFuzzer flags.
+            "build/fuzz/core-cpp/fuzz/$name" $FUZZ_ARGS "$scratch" "core-cpp/fuzz/corpus/$name"
             echo "::endgroup::"
-          done < <(find build/fuzz -type f -perm -u+x -name 'fuzz_*' | sort)
-          if [ "$found" -eq 0 ]; then
-            echo "error: no fuzz_* binaries under build/fuzz" >&2
-            exit 1
-          fi
+          done

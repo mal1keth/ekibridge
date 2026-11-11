@@ -819,7 +819,7 @@ Every unsafe block and impl carries a `// SAFETY:` comment.
 ## Known limitations
 
 - The wrapped-key blob does not authenticate its metadata (algorithm, label, id); see the
-  [threat model](threat-model.md#known-limitations).
+  [threat model](threat-model.md#limits).
 - Pending destroy requests live only as long as the handle that made them, with either backend.
 - The PKCS#11 PIN is passed as a NUL-terminated C string and lives in caller memory for the
   duration of the open call.

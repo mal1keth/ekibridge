@@ -1,154 +1,188 @@
-//! `eki_ks_unwrap` in a software key store on arbitrary blobs, algorithms, labels and ids.
+//! `eki_ks_unwrap` on arbitrary blobs, algorithms, labels and ids, in a store opened from an
+//! arbitrary configuration.
 //!
-//! Each run opens a fresh store and generates an AES-256 key to unwrap under. The blob is either
-//! taken from the input as it is or, when the input asks for it, a genuine wrap of a freshly
-//! generated HMAC key with input bytes XORed over it, so the success path is reachable too.
+//! Input: a flag (one byte, low bit); when set, a store configuration (`Config` in the shared
+//! library) for `eki_ks_open_v2`, otherwise a plain software store from `eki_ks_open`. Then a flag
+//! choosing the blob's origin, the blob or XOR mask (byte string), the algorithm (i32), the id
+//! (16 bytes) and the label (`read_label`).
 //!
-//! Properties: every status is a defined value, and after a successful unwrap the new key is
-//! usable under the id it was given (`eki_ks_get_info` reports the requested algorithm and label,
-//! and an HMAC key computes a MAC).
+//! Each run generates an AES-256 key to unwrap under. The blob is the input's bytes as they
+//! are, or a real wrap of a freshly generated HMAC key with the input's bytes XORed over it, so
+//! the success path is reachable. Properties:
+//! * opening fails or succeeds as the contract allows; a failed open leaves `*out` NULL;
+//! * the unwrap status is exactly the one the contract's validation order gives: a NULL label,
+//!   then the algorithm, the blob length, ECDSA, the label format, then the integrity check
+//!   (`EKI_OK` only for an unmodified real wrap; a raw blob never authenticates);
+//! * after a successful unwrap, `eki_ks_get_info_v2` reports the requested algorithm, the label
+//!   and the ACTIVE state, and an HMAC key computes the same tag as the key that was wrapped;
+//! * the store closes, and an audit log it wrote verifies afterwards.
 
 #![no_main]
 
-use core::ffi::c_char;
-
 use ekicore_abi::{
-    EKI_KEY_AES_256, EKI_KEY_HMAC_SHA256, EKI_KS_SOFTWARE, eki_key_alg, eki_key_id, eki_key_info,
-    eki_ks, eki_ks_config,
+    EKI_KEY_AES_256, EKI_KEY_ECDSA_P256, EKI_KEY_HMAC_SHA256, EKI_KEY_STATE_ACTIVE,
+    EKI_LABEL_MAX_LEN, EKI_WRAPPED_KEY_LEN, eki_key_alg, eki_key_id, eki_key_info_v2, eki_ks,
 };
 use ekicore_rs::ffi::{
-    eki_ks_close, eki_ks_generate, eki_ks_get_info, eki_ks_hmac_sha256, eki_ks_open, eki_ks_unwrap,
+    eki_audit_verify, eki_ks_get_info_v2, eki_ks_hmac_sha256, eki_ks_open_v2, eki_ks_unwrap,
     eki_ks_wrap,
 };
-use ekicore_rs_fuzz::{EKI_OK, UnwrapInput, assert_status_in_range, c_label};
+use ekicore_rs_fuzz::{
+    AUTH_FAILED, Approvers, Call, Config, INVALID_ARGUMENT, NULL_POINTER, OK, Reader, Scratch,
+    Slot, Store, label_is_valid, read_label,
+};
 use libfuzzer_sys::fuzz_target;
 
-/// Closes the store when dropped, so a failed assertion still releases it.
-struct Store(*mut eki_ks);
-
-impl Drop for Store {
-    fn drop(&mut self) {
-        // SAFETY: `self.0` came from a successful `eki_ks_open` and is closed exactly once,
-        // here, with no other call on it in flight.
-        unsafe { eki_ks_close(self.0) };
+/// Opens the store the input describes, or returns `None` after checking a failed open.
+fn open(r: &mut Reader<'_>, scratch: &Scratch, approvers: &mut Approvers) -> Option<Store> {
+    if !r.boolean() {
+        return Some(Store::software());
     }
-}
-
-/// Generates a key of `alg` in `store` and returns its id.
-fn generate(store: &Store, alg: eki_key_alg, label: &core::ffi::CStr) -> eki_key_id {
-    let mut id = eki_key_id { bytes: [0xA5; 16] };
-    // SAFETY: `store.0` is an open handle; `label` is a NUL-terminated string that outlives
-    // the call; `id` is a live, writable `eki_key_id`.
-    let status = unsafe { eki_ks_generate(store.0, alg, label.as_ptr(), &mut id) } as i32;
-    assert_eq!(
-        status, EKI_OK,
-        "eki_ks_generate failed in an open software store"
-    );
-    id
-}
-
-fuzz_target!(|input: UnwrapInput| {
-    let config = eki_ks_config {
-        backend: EKI_KS_SOFTWARE,
-        pkcs11_module_path: core::ptr::null(),
-        pkcs11_token_label: core::ptr::null(),
-        pkcs11_user_pin: core::ptr::null(),
-    };
-    let mut handle: *mut eki_ks = core::ptr::null_mut();
-    // SAFETY: `config` is a live, initialised struct (the software backend ignores the NULL
-    // PKCS#11 fields); `handle` is a live, writable pointer slot.
-    let status = unsafe { eki_ks_open(&config, &mut handle) } as i32;
-    assert_status_in_range("eki_ks_open", status);
-    if status != EKI_OK {
-        // The key store is still a stub (EKI_ERR_UNSUPPORTED): nothing more to exercise.
-        assert!(
-            handle.is_null(),
-            "eki_ks_open failed but left a handle in *out"
-        );
-        return;
-    }
+    let config = Config::read(r, scratch, approvers);
+    let raw = config.v2();
+    let mut out = Slot::<*mut eki_ks>::new(false);
+    // SAFETY: `raw` points only into buffers `config` owns, which outlive the call, and every
+    // pointer field is NULL or valid as the contract requires (`Config` sizes the approver keys
+    // to the count); `out` is a live, writable, aligned `eki_ks *`.
+    let status = unsafe { eki_ks_open_v2(&raw, out.ptr()) } as i32;
+    let mut call = Call::new("eki_ks_open_v2", status);
+    call.null_field = config.null_field_v2();
+    call.outputs.push(out.seen());
+    call.check();
+    let expected = config.expected_open(true, scratch, false);
     assert!(
-        !handle.is_null(),
-        "eki_ks_open returned EKI_OK with a NULL handle"
+        expected.contains(&status),
+        "eki_ks_open_v2: {status}, expected one of {expected:?}"
     );
-    let store = Store(handle);
+    (status == OK).then(|| Store::from_raw(out.get()))
+}
 
-    let kek = generate(&store, EKI_KEY_AES_256, c"fuzz-kek");
+fn hmac(store: &Store, id: &eki_key_id) -> [u8; 32] {
+    let msg = b"ekibridge";
+    let mut tag = [0xA5_u8; 32];
+    // SAFETY: `store` is open; `id` is a live struct; `msg` is a live 9-byte array; `tag` is a
+    // writable 32-byte buffer.
+    let status =
+        unsafe { eki_ks_hmac_sha256(store.ptr(), id, msg.as_ptr(), msg.len(), tag.as_mut_ptr()) }
+            as i32;
+    assert_eq!(
+        status, OK,
+        "eki_ks_hmac_sha256 failed for an active HMAC key"
+    );
+    tag
+}
 
-    let blob = if input.from_wrap {
-        let key = generate(&store, EKI_KEY_HMAC_SHA256, c"fuzz-wrapped");
-        let mut wrapped = [0xA5_u8; 40];
-        // SAFETY: `store.0` is open; both ids are live structs; `wrapped` is a writable
-        // 40-byte buffer as `out` requires.
-        let status = unsafe { eki_ks_wrap(store.0, &kek, &key, wrapped.as_mut_ptr()) } as i32;
-        assert_eq!(
-            status, EKI_OK,
-            "wrapping an HMAC key under an AES key failed"
-        );
-        for (byte, mask) in wrapped.iter_mut().zip(input.blob.iter()) {
+fuzz_target!(|data: &[u8]| {
+    let mut r = Reader::new(data);
+    let scratch = Scratch::new("unwrap_blob");
+    scratch.reset();
+    let mut approvers = Approvers::default();
+    let Some(store) = open(&mut r, &scratch, &mut approvers) else {
+        return;
+    };
+    let from_wrap = r.boolean();
+    let input_blob = r.bytes();
+    let alg = eki_key_alg(r.i32());
+    let id = eki_key_id { bytes: r.array() };
+    let label = read_label(&mut r);
+
+    let kek = store.generate(EKI_KEY_AES_256, c"fuzz-kek");
+    let (blob, wrapped) = if from_wrap {
+        let key = store.generate(EKI_KEY_HMAC_SHA256, c"fuzz-wrapped");
+        let mut blob = vec![0xA5_u8; EKI_WRAPPED_KEY_LEN];
+        // SAFETY: `store` is open; both ids are live structs; `blob` is a writable 40-byte
+        // allocation, as `out` requires.
+        let status = unsafe { eki_ks_wrap(store.ptr(), &kek, &key, blob.as_mut_ptr()) } as i32;
+        assert_eq!(status, OK, "wrapping an HMAC key under an AES key failed");
+        let mut changed = false;
+        for (byte, mask) in blob.iter_mut().zip(&input_blob) {
             *byte ^= mask;
+            changed |= *mask != 0;
         }
-        wrapped.to_vec()
+        (blob, Some((key, changed)))
     } else {
-        input.blob.clone()
+        (input_blob, None)
     };
 
-    let alg = eki_key_alg(input.alg);
-    let label = c_label(&input.label);
-    let id = eki_key_id { bytes: input.id };
-    // SAFETY: `store.0` is open; `kek` and `id` are live structs; `blob` points into a live Vec
-    // of `blob.len()` bytes; `label` is NUL-terminated (the library reads at most 65 bytes and
-    // `label` holds at least one byte, the NUL, so every byte it may read is in bounds).
+    // SAFETY: `store` is open; `kek` and `id` are live structs; `blob` is a live Vec of
+    // `blob.len()` bytes; `label` is NULL, NUL-terminated, or 65 readable bytes, of which the
+    // library reads at most 65.
     let status = unsafe {
         eki_ks_unwrap(
-            store.0,
+            store.ptr(),
             &kek,
             blob.as_ptr(),
             blob.len(),
             alg,
-            label.as_ptr().cast::<c_char>(),
+            label.ptr(),
             &id,
         )
     } as i32;
-    assert_status_in_range("eki_ks_unwrap", status);
-    if status != EKI_OK {
-        return;
+    let mut call = Call::new("eki_ks_unwrap", status);
+    call.null_param = label.is_null();
+    call.check();
+
+    let seen = label.seen(EKI_LABEL_MAX_LEN + 1);
+    let expected = if label.is_null() {
+        NULL_POINTER
+    } else if !(1..=3).contains(&alg.0)
+        || blob.len() != EKI_WRAPPED_KEY_LEN
+        || alg == EKI_KEY_ECDSA_P256
+        || !seen.is_some_and(label_is_valid)
+    {
+        INVALID_ARGUMENT
+    } else if wrapped.is_some_and(|(_, changed)| !changed) {
+        OK
+    } else {
+        AUTH_FAILED
+    };
+    assert_eq!(status, expected, "eki_ks_unwrap");
+
+    if status == OK {
+        let mut info = Slot::<eki_key_info_v2>::new(false);
+        // SAFETY: `store` is open; `id` is a live struct; `info` is a live, writable, aligned
+        // `eki_key_info_v2`.
+        let status = unsafe { eki_ks_get_info_v2(store.ptr(), &id, info.ptr()) } as i32;
+        assert_eq!(status, OK, "eki_ks_get_info_v2 failed for an unwrapped key");
+        let info = info.get();
+        assert_eq!(info.alg, alg, "unwrapped key reports another algorithm");
+        assert_eq!(
+            info.state, EKI_KEY_STATE_ACTIVE,
+            "unwrapped key is not ACTIVE"
+        );
+        let stored: Vec<u8> = info.label.iter().map(|&c| c as u8).collect();
+        let label = seen.expect("a valid label");
+        assert_eq!(
+            &stored[..label.len()],
+            label,
+            "unwrapped key reports another label"
+        );
+        assert!(
+            stored[label.len()..].iter().all(|&b| b == 0),
+            "label not NUL-padded"
+        );
+        if alg == EKI_KEY_HMAC_SHA256 {
+            let (key, _) = wrapped.expect("only a real wrap unwraps");
+            assert_eq!(
+                hmac(&store, &id),
+                hmac(&store, &key),
+                "unwrap changed the key"
+            );
+        }
     }
 
-    let mut info = eki_key_info {
-        alg: eki_key_alg(-1),
-        label: [0x55; 65],
-    };
-    // SAFETY: `store.0` is open; `id` is a live struct; `info` is a live, writable struct.
-    let status = unsafe { eki_ks_get_info(store.0, &id, &mut info) } as i32;
-    assert_eq!(
-        status, EKI_OK,
-        "eki_ks_get_info failed for a key that was just unwrapped"
-    );
-    assert_eq!(info.alg, alg, "unwrapped key reports a different algorithm");
-    let stored_label: Vec<u8> = info.label.iter().map(|&c| c as u8).collect();
-    let nul = label.iter().position(|&b| b == 0).unwrap_or(label.len());
-    assert_eq!(
-        &stored_label[..nul],
-        &label[..nul],
-        "unwrapped key reports a different label"
-    );
-    assert!(
-        stored_label[nul..].iter().all(|&b| b == 0),
-        "label is not NUL-padded"
-    );
-
-    if alg == EKI_KEY_HMAC_SHA256 {
-        let mut mac = [0xA5_u8; 32];
-        let msg = b"ekibridge";
-        // SAFETY: `store.0` is open; `id` is a live struct; `msg` is a live 9-byte array;
-        // `mac` is a writable 32-byte buffer as `out` requires.
+    drop(store);
+    drop(approvers);
+    if scratch.log_path.exists() {
+        let mut records = Slot::<u64>::new(false);
+        // SAFETY: `scratch.log` is NUL-terminated and outlives the call; `expected_head` is
+        // NULL, which the contract allows; `records` is a live, writable, aligned `uint64_t`.
         let status =
-            unsafe { eki_ks_hmac_sha256(store.0, &id, msg.as_ptr(), msg.len(), mac.as_mut_ptr()) }
+            unsafe { eki_audit_verify(scratch.log.as_ptr(), core::ptr::null(), records.ptr()) }
                 as i32;
         assert_eq!(
-            status, EKI_OK,
-            "eki_ks_hmac_sha256 failed for an unwrapped HMAC key"
+            status, OK,
+            "the audit log of a closed store does not verify"
         );
     }
 });

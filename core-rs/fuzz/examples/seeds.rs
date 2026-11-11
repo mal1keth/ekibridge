@@ -1,325 +1,166 @@
-//! Regenerates the seed corpora of both fuzzing setups from the published test vectors.
+//! Regenerates the seed corpora of both fuzzing setups.
 //!
 //! ```text
-//! cargo run --manifest-path core-rs/fuzz/Cargo.toml --example seeds
+//! cargo run --manifest-path core-rs/fuzz/Cargo.toml --example seeds --features pq
 //! ```
 //!
-//! Writes `core-rs/fuzz/corpus/<target>/<seed>` (the byte layout `arbitrary` decodes into the
-//! input structs of `src/lib.rs`) and `core-cpp/fuzz/corpus/<target>/<seed>` (the length-prefixed
-//! layout read by `core-cpp/fuzz/fuzz_input.hpp`). The values come from the RFC and spec vector
-//! files under `conformance/vectors/`, plus RFC 3394 §4.6 for the unwrap target. Each Rust seed
-//! is decoded again with `arbitrary` and compared with the value it was built from, so a change
-//! in `arbitrary`'s format makes this program fail instead of writing seeds that mean nothing.
+//! The Rust targets (`src/lib.rs`) and the C++ targets (`core-cpp/fuzz/fuzz_input.hpp`) read the
+//! same input layout, so each seed is written twice with the same bytes:
+//! `core-rs/fuzz/corpus/<target>/<seed>` and `core-cpp/fuzz/corpus/fuzz_<target>/<seed>` (the
+//! unwrap target is `unwrap_blob` in Rust and `fuzz_ks_unwrap` in C++).
 //!
-//! Existing files with the same names are overwritten; other files in the corpus directories
-//! (inputs libFuzzer saved during a run) are left alone.
+//! The values come from the RFC and spec vector files under `conformance/vectors/`, from RFC 3394
+//! section 4.6, and from artefacts this library makes while the generator runs: audit logs, and
+//! with the `pq` feature hybrid KEM key pairs and ciphertexts. Seeds that need the feature are
+//! skipped without it. Before writing, every named seed of a target is removed; inputs that
+//! libFuzzer added during a run (named by their SHA-1, 40 hex digits, and ignored by git) are left
+//! alone.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use arbitrary::{Arbitrary, Unstructured};
-use ekicore_rs_fuzz::{AeadOpenInput, HkdfInput, InBuf, StatelessCall, UnwrapInput};
+use ekicore_abi::{
+    EKI_AUDIT_HASH_LEN, EKI_HYBRID_CT_LEN, EKI_HYBRID_PK_LEN, EKI_HYBRID_SK_LEN, EKI_KEY_AES_256,
+    EKI_KEY_HMAC_SHA256, eki_ks,
+};
+use ekicore_rs::ffi::{
+    eki_hybrid_kem_encap, eki_hybrid_kem_keygen, eki_ks_audit_head, eki_ks_hmac_sha256,
+    eki_ks_open_v2, eki_ks_wrap,
+};
+use ekicore_rs_fuzz::{Config, OK, Scratch, Slot, Store, audit_rebuild};
 use serde_json::Value;
 
-/// RFC 3394 §4.6: 256 bits of key data wrapped under a 256-bit KEK.
+/// RFC 3394 section 4.6: 256 bits of key data wrapped under a 256-bit KEK.
 const RFC3394_4_6_WRAPPED: &str =
     "28c9f404c4b810f4cbccb35cfb87f8263f5786e2d80ed326cbc7f0e71a99f43bfb988b9b7a02dd21";
 
-// ---------------------------------------------------------------------------------------------
-// Encoders
-// ---------------------------------------------------------------------------------------------
+// --- Encoding --------------------------------------------------------------------------------
 
-/// Builds input bytes in the layout `arbitrary` 1.x decodes (`Arbitrary::arbitrary_take_rest`).
-#[derive(Default)]
-struct ArbEnc(Vec<u8>);
+/// Writes input bytes in the layout `Reader` reads.
+#[derive(Default, Clone)]
+struct Enc(Vec<u8>);
 
-impl ArbEnc {
-    fn i32(&mut self, v: i32) -> &mut Self {
-        self.0.extend_from_slice(&v.to_le_bytes());
-        self
-    }
-    fn bool(&mut self, v: bool) -> &mut Self {
-        self.0.push(u8::from(v));
-        self
-    }
-    fn array(&mut self, v: &[u8]) -> &mut Self {
-        self.0.extend_from_slice(v);
-        self
-    }
-    /// A byte array that is the last field: `arbitrary` reads the whole array, then reads its
-    /// last element a second time from whatever follows, so that byte is written twice.
-    fn array_last(&mut self, v: &[u8]) -> &mut Self {
-        self.array(v);
-        if let Some(&b) = v.last() {
-            self.0.push(b);
-        }
-        self
-    }
-    /// A `Vec<u8>`: each element is preceded by a "continue" byte, and a 0 byte ends the list.
-    /// The last field of a struct ends at the end of the input instead.
-    fn vec(&mut self, v: &[u8], last: bool) -> &mut Self {
-        for &b in v {
-            self.0.extend_from_slice(&[1, b]);
-        }
-        if !last {
-            self.0.push(0);
-        }
-        self
-    }
-    /// `Unstructured::int_in_range(0..=9000)`: two big-endian bytes, reduced modulo 9001.
-    fn okm_len(&mut self, v: usize) -> &mut Self {
-        let v = u16::try_from(v).expect("okm_len fits in u16");
-        self.0.extend_from_slice(&v.to_be_bytes());
-        self
-    }
-    /// Enum variant `index` of `count`: a u32 `x` with `(x * count) >> 32 == index`.
-    fn variant(&mut self, index: u64, count: u64) -> &mut Self {
-        let x = u32::try_from((index << 32).div_ceil(count)).expect("variant fits");
-        self.0.extend_from_slice(&x.to_le_bytes());
-        self
-    }
-    fn in_buf(&mut self, b: &InBuf, last: bool) -> &mut Self {
-        self.bool(b.null).vec(&b.data, last)
-    }
-}
-
-/// Builds input bytes in the layout of `core-cpp/fuzz/fuzz_input.hpp`: integers little-endian,
-/// fixed arrays as they are, byte strings as a 2-byte little-endian length and the bytes.
-#[derive(Default)]
-struct LpEnc(Vec<u8>);
-
-impl LpEnc {
-    fn u8(&mut self, v: u8) -> &mut Self {
+impl Enc {
+    fn u8(mut self, v: u8) -> Self {
         self.0.push(v);
         self
     }
-    fn i32(&mut self, v: i32) -> &mut Self {
-        self.0.extend_from_slice(&v.to_le_bytes());
-        self
+    fn bool(self, v: bool) -> Self {
+        self.u8(u8::from(v))
     }
-    fn u16(&mut self, v: usize) -> &mut Self {
+    fn u16(mut self, v: usize) -> Self {
         let v = u16::try_from(v).expect("value fits in u16");
         self.0.extend_from_slice(&v.to_le_bytes());
         self
     }
-    fn bool(&mut self, v: bool) -> &mut Self {
-        self.u8(u8::from(v))
+    fn i32(mut self, v: i32) -> Self {
+        self.0.extend_from_slice(&v.to_le_bytes());
+        self
     }
-    fn array(&mut self, v: &[u8]) -> &mut Self {
+    fn array(mut self, v: &[u8]) -> Self {
         self.0.extend_from_slice(v);
         self
     }
-    fn bytes(&mut self, v: &[u8]) -> &mut Self {
+    fn bytes(self, v: &[u8]) -> Self {
         self.u16(v.len()).array(v)
     }
-    fn in_buf(&mut self, b: &InBuf) -> &mut Self {
-        self.bool(b.null).bytes(&b.data)
+    /// `InBuf`: the NULL flag, then the bytes.
+    fn buf(self, null: bool, v: &[u8]) -> Self {
+        self.bool(null).bytes(v)
+    }
+    /// `read_capped_len`: 0 the real length, 2 the cap plus one, 3 `usize::MAX`.
+    fn len(self, mode: u8) -> Self {
+        self.u8(mode)
+    }
+    /// `read_key_ref`: a key the session made, by index.
+    fn known(self, index: u8) -> Self {
+        self.u8(2).u8(index)
+    }
+    /// `read_key_ref`: 16 raw bytes.
+    fn raw_id(self, id: &[u8; 16]) -> Self {
+        self.u8(1).array(id)
+    }
+    /// `read_key_ref`: NULL.
+    fn null_id(self) -> Self {
+        self.u8(0)
+    }
+    /// `read_label`: a NUL-terminated label.
+    fn label(self, text: &[u8]) -> Self {
+        self.u8(1).bytes(text)
+    }
+    /// `read_label`: 65 bytes without a NUL.
+    fn label_65(self, text: &[u8]) -> Self {
+        self.u8(2).bytes(text)
+    }
+    /// `read_label`: NULL.
+    fn null_label(self) -> Self {
+        self.u8(0)
+    }
+    fn config(self, c: &Cfg) -> Self {
+        let mut e = self
+            .i32(c.backend)
+            .u8(c.flags)
+            .bytes(c.token_label)
+            .bytes(c.pin)
+            .u8(c.audit)
+            .u8(c.count)
+            .u8(c.source);
+        match c.source {
+            1 => e = e.bytes(&c.raw_keys),
+            2 => e = e.array(&c.picks),
+            _ => {}
+        }
+        e
     }
 }
 
-fn rust_aead_open(i: &AeadOpenInput) -> Vec<u8> {
-    let mut e = ArbEnc::default();
-    e.i32(i.alg)
-        .vec(&i.key, false)
-        .vec(&i.nonce, false)
-        .vec(&i.aad, false);
-    e.vec(&i.ct, false).array_last(&i.tag);
-    e.0
+/// The fields of a `Config` as the input spells them.
+#[derive(Clone)]
+struct Cfg {
+    backend: i32,
+    flags: u8,
+    token_label: &'static [u8],
+    pin: &'static [u8],
+    /// `read_audit_path`: 0 NULL, 1 the run's log, 2 "", 3 4097 bytes, 4 a directory, 5 missing.
+    audit: u8,
+    count: u8,
+    /// 0 NULL, 1 raw bytes, 2 generated keys.
+    source: u8,
+    raw_keys: Vec<u8>,
+    picks: Vec<u8>,
 }
 
-fn cpp_aead_open(i: &AeadOpenInput) -> Vec<u8> {
-    let mut e = LpEnc::default();
-    e.i32(i.alg)
-        .bytes(&i.key)
-        .bytes(&i.nonce)
-        .bytes(&i.aad)
-        .bytes(&i.ct)
-        .array(&i.tag);
-    e.0
-}
-
-fn rust_hkdf(i: &HkdfInput) -> Vec<u8> {
-    let mut e = ArbEnc::default();
-    e.vec(&i.ikm, false)
-        .vec(&i.salt, false)
-        .vec(&i.info, false)
-        .okm_len(i.okm_len);
-    e.0
-}
-
-const STATELESS_VARIANTS: u64 = 6;
-
-fn rust_stateless(c: &StatelessCall) -> Vec<u8> {
-    let mut e = ArbEnc::default();
-    match c {
-        StatelessCall::Hmac { key, msg, out_null } => {
-            e.variant(0, STATELESS_VARIANTS)
-                .in_buf(key, false)
-                .in_buf(msg, false);
-            e.bool(*out_null);
-        }
-        StatelessCall::HmacVerify { key, msg, tag } => {
-            e.variant(1, STATELESS_VARIANTS)
-                .in_buf(key, false)
-                .in_buf(msg, false);
-            e.in_buf(tag, true);
-        }
-        StatelessCall::Hkdf {
-            ikm,
-            salt,
-            info,
-            okm_null,
-            okm_len,
-        } => {
-            e.variant(2, STATELESS_VARIANTS)
-                .in_buf(ikm, false)
-                .in_buf(salt, false);
-            e.in_buf(info, false).bool(*okm_null).okm_len(*okm_len);
-        }
-        StatelessCall::AeadSeal {
-            alg,
-            key,
-            nonce,
-            aad,
-            pt,
-            ct_out_null,
-            tag_out_null,
-        } => {
-            e.variant(3, STATELESS_VARIANTS)
-                .i32(*alg)
-                .in_buf(key, false);
-            e.in_buf(nonce, false).in_buf(aad, false).in_buf(pt, false);
-            e.bool(*ct_out_null).bool(*tag_out_null);
-        }
-        StatelessCall::AeadOpen {
-            alg,
-            key,
-            nonce,
-            aad,
-            ct,
-            tag_null,
-            tag,
-            pt_out_null,
-        } => {
-            e.variant(4, STATELESS_VARIANTS)
-                .i32(*alg)
-                .in_buf(key, false);
-            e.in_buf(nonce, false).in_buf(aad, false).in_buf(ct, false);
-            e.bool(*tag_null).array(tag).bool(*pt_out_null);
-        }
-        StatelessCall::EcdsaVerify {
-            public_key_null,
-            public_key,
-            msg,
-            sig_null,
-            sig,
-        } => {
-            e.variant(5, STATELESS_VARIANTS)
-                .bool(*public_key_null)
-                .array(public_key);
-            e.in_buf(msg, false).bool(*sig_null).array_last(sig);
+impl Cfg {
+    fn software() -> Self {
+        Self {
+            backend: 1,
+            flags: 0,
+            token_label: b"",
+            pin: b"",
+            audit: 0,
+            count: 0,
+            source: 0,
+            raw_keys: Vec::new(),
+            picks: Vec::new(),
         }
     }
-    e.0
-}
-
-/// The C++ target picks the function from the first byte modulo 6, in the order of
-/// `StatelessCall`, and reads the same fields in the same order.
-fn cpp_stateless(c: &StatelessCall) -> Vec<u8> {
-    let mut e = LpEnc::default();
-    match c {
-        StatelessCall::Hmac { key, msg, out_null } => {
-            e.u8(0).in_buf(key).in_buf(msg).bool(*out_null);
-        }
-        StatelessCall::HmacVerify { key, msg, tag } => {
-            e.u8(1).in_buf(key).in_buf(msg).in_buf(tag);
-        }
-        StatelessCall::Hkdf {
-            ikm,
-            salt,
-            info,
-            okm_null,
-            okm_len,
-        } => {
-            e.u8(2)
-                .in_buf(ikm)
-                .in_buf(salt)
-                .in_buf(info)
-                .bool(*okm_null)
-                .u16(*okm_len);
-        }
-        StatelessCall::AeadSeal {
-            alg,
-            key,
-            nonce,
-            aad,
-            pt,
-            ct_out_null,
-            tag_out_null,
-        } => {
-            e.u8(3)
-                .i32(*alg)
-                .in_buf(key)
-                .in_buf(nonce)
-                .in_buf(aad)
-                .in_buf(pt);
-            e.bool(*ct_out_null).bool(*tag_out_null);
-        }
-        StatelessCall::AeadOpen {
-            alg,
-            key,
-            nonce,
-            aad,
-            ct,
-            tag_null,
-            tag,
-            pt_out_null,
-        } => {
-            e.u8(4)
-                .i32(*alg)
-                .in_buf(key)
-                .in_buf(nonce)
-                .in_buf(aad)
-                .in_buf(ct);
-            e.bool(*tag_null).array(tag).bool(*pt_out_null);
-        }
-        StatelessCall::EcdsaVerify {
-            public_key_null,
-            public_key,
-            msg,
-            sig_null,
-            sig,
-        } => {
-            e.u8(5).bool(*public_key_null).array(public_key).in_buf(msg);
-            e.bool(*sig_null).array(sig);
+    fn audited() -> Self {
+        Self {
+            audit: 1,
+            ..Self::software()
         }
     }
-    e.0
+    fn dual(picks: &[u8]) -> Self {
+        Self {
+            count: u8::try_from(picks.len()).expect("few approvers"),
+            source: 2,
+            picks: picks.to_vec(),
+            ..Self::audited()
+        }
+    }
 }
 
-fn rust_unwrap(i: &UnwrapInput) -> Vec<u8> {
-    let mut e = ArbEnc::default();
-    e.bool(i.from_wrap)
-        .vec(&i.blob, false)
-        .i32(i.alg)
-        .array(&i.id)
-        .vec(&i.label, true);
-    e.0
-}
-
-fn cpp_unwrap(i: &UnwrapInput) -> Vec<u8> {
-    let mut e = LpEnc::default();
-    e.bool(i.from_wrap)
-        .bytes(&i.blob)
-        .i32(i.alg)
-        .array(&i.id)
-        .bytes(&i.label);
-    e.0
-}
-
-// ---------------------------------------------------------------------------------------------
-// Vectors
-// ---------------------------------------------------------------------------------------------
+// --- Vectors ---------------------------------------------------------------------------------
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -329,10 +170,7 @@ fn cases(file: &str) -> Vec<Value> {
     let path = repo_root().join("conformance/vectors").join(file);
     let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     let doc: Value = serde_json::from_str(&text).expect("vector file is JSON");
-    doc["cases"]
-        .as_array()
-        .expect("vector file has a cases array")
-        .clone()
+    doc["cases"].as_array().expect("cases array").clone()
 }
 
 fn hex_field(case: &Value, field: &str) -> Vec<u8> {
@@ -342,12 +180,6 @@ fn hex_field(case: &Value, field: &str) -> Vec<u8> {
     hex::decode(text).expect("field is hex")
 }
 
-fn fixed<const N: usize>(bytes: &[u8]) -> [u8; N] {
-    bytes
-        .try_into()
-        .expect("fixed-size field has the expected length")
-}
-
 fn named<'a>(cases: &'a [Value], name: &str) -> &'a Value {
     cases
         .iter()
@@ -355,81 +187,134 @@ fn named<'a>(cases: &'a [Value], name: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("no case named {name}"))
 }
 
-fn buf(data: &[u8]) -> InBuf {
-    InBuf {
-        null: false,
-        data: data.to_vec(),
-    }
+struct Aead {
+    alg: i32,
+    key: Vec<u8>,
+    nonce: Vec<u8>,
+    aad: Vec<u8>,
+    pt: Vec<u8>,
+    ct: Vec<u8>,
+    tag: Vec<u8>,
 }
 
-fn null_buf(data: &[u8]) -> InBuf {
-    InBuf {
-        null: true,
-        data: data.to_vec(),
-    }
-}
-
-fn aead_case(case: &Value, alg: i32) -> AeadOpenInput {
-    AeadOpenInput {
+fn aead(case: &Value, alg: i32) -> Aead {
+    Aead {
         alg,
         key: hex_field(case, "key"),
         nonce: hex_field(case, "nonce"),
         aad: hex_field(case, "aad"),
+        pt: hex_field(case, "pt"),
         ct: hex_field(case, "ct"),
-        tag: fixed(&hex_field(case, "tag")),
+        tag: hex_field(case, "tag"),
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Output
-// ---------------------------------------------------------------------------------------------
+// --- Artefacts made by the library ------------------------------------------------------------
 
-struct Writer {
+/// A store with the run's audit log, opened with `eki_ks_open_v2`.
+fn audited_store(scratch: &Scratch) -> Store {
+    let mut config = Config::software();
+    config.set_audit_log(scratch);
+    let mut out = Slot::<*mut eki_ks>::new(false);
+    // SAFETY: the config view points into buffers `config` owns; `out` is a live, aligned
+    // `eki_ks *`.
+    let status = unsafe { eki_ks_open_v2(&config.v2(), out.ptr()) } as i32;
+    assert_eq!(status, OK, "opening a store with an audit log");
+    Store::from_raw(out.get())
+}
+
+/// A log of five records (open, two generates, wrap, hmac) and close, with the head before close.
+fn audit_log() -> (Vec<u8>, [u8; EKI_AUDIT_HASH_LEN]) {
+    let scratch = Scratch::new("seeds");
+    scratch.reset();
+    let store = audited_store(&scratch);
+    let kek = store.generate(EKI_KEY_AES_256, c"seed-kek");
+    let key = store.generate(EKI_KEY_HMAC_SHA256, c"seed-mac");
+    let mut out = [0_u8; 40];
+    let mut head = [0_u8; EKI_AUDIT_HASH_LEN];
+    let mut seq = 0_u64;
+    // SAFETY: `store` is open; the ids are live structs; `out` is a writable 40-byte buffer, then
+    // the first 32 bytes of it, `msg` a live 4-byte array; `head` and `seq` are writable.
+    unsafe {
+        assert_eq!(
+            eki_ks_wrap(store.ptr(), &kek, &key, out.as_mut_ptr()) as i32,
+            OK
+        );
+        let msg = b"seed";
+        let status =
+            eki_ks_hmac_sha256(store.ptr(), &key, msg.as_ptr(), msg.len(), out.as_mut_ptr());
+        assert_eq!(status as i32, OK);
+        assert_eq!(
+            eki_ks_audit_head(store.ptr(), head.as_mut_ptr(), &mut seq) as i32,
+            OK
+        );
+    }
+    drop(store);
+    let log = fs::read(&scratch.log_path).expect("reading the log");
+    scratch.reset();
+    let rebuilt = audit_rebuild(&log).expect("the library writes valid logs");
+    assert_eq!(rebuilt.records, seq + 1, "close adds one record");
+    (log, head)
+}
+
+/// A hybrid KEM key pair and a ciphertext to it, or `None` without the `pq` feature.
+fn kem() -> Option<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    let mut pk = vec![0_u8; EKI_HYBRID_PK_LEN];
+    let mut sk = vec![0_u8; EKI_HYBRID_SK_LEN];
+    let mut ct = vec![0_u8; EKI_HYBRID_CT_LEN];
+    let mut ss = [0_u8; 32];
+    // SAFETY: each buffer has exactly the size the function writes or reads.
+    unsafe {
+        if eki_hybrid_kem_keygen(pk.as_mut_ptr(), sk.as_mut_ptr()) as i32 != OK {
+            return None;
+        }
+        let status = eki_hybrid_kem_encap(pk.as_ptr(), ct.as_mut_ptr(), ss.as_mut_ptr());
+        assert_eq!(status as i32, OK);
+    }
+    Some((pk, sk, ct))
+}
+
+// --- Output ----------------------------------------------------------------------------------
+
+/// Writes seeds of one target to both corpora.
+struct Target {
+    dirs: [PathBuf; 2],
     written: usize,
 }
 
-impl Writer {
-    fn put(&mut self, dir: &Path, name: &str, bytes: &[u8]) {
-        fs::create_dir_all(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
-        let path = dir.join(name);
-        fs::write(&path, bytes).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-        self.written += 1;
+impl Target {
+    fn new(rust: &str, cpp: &str) -> Self {
+        let root = repo_root();
+        let dirs = [
+            root.join("core-rs/fuzz/corpus").join(rust),
+            root.join("core-cpp/fuzz/corpus").join(cpp),
+        ];
+        for dir in &dirs {
+            fs::create_dir_all(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+            for entry in fs::read_dir(dir).expect("corpus directory") {
+                let path = entry.expect("entry").path();
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                let hashed = name.len() == 40 && name.bytes().all(|b| b.is_ascii_hexdigit());
+                if !hashed {
+                    fs::remove_file(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+                }
+            }
+        }
+        Self { dirs, written: 0 }
     }
 
-    /// Writes one seed for the Rust target `rust` and the C++ target `cpp` (if any), after
-    /// checking that the Rust bytes decode back to `value`.
-    fn seed<T>(
-        &mut self,
-        rust: &str,
-        cpp: Option<&str>,
-        name: &str,
-        value: &T,
-        encode_rust: fn(&T) -> Vec<u8>,
-        encode_cpp: fn(&T) -> Vec<u8>,
-    ) where
-        T: for<'a> Arbitrary<'a> + PartialEq + std::fmt::Debug,
-    {
-        let bytes = encode_rust(value);
-        let decoded = T::arbitrary_take_rest(Unstructured::new(&bytes))
-            .unwrap_or_else(|e| panic!("{rust}/{name}: seed does not decode: {e}"));
-        assert_eq!(
-            &decoded, value,
-            "{rust}/{name}: seed decodes to a different value"
-        );
-        let root = repo_root();
-        self.put(&root.join("core-rs/fuzz/corpus").join(rust), name, &bytes);
-        if let Some(cpp) = cpp {
-            self.put(
-                &root.join("core-cpp/fuzz/corpus").join(cpp),
-                name,
-                &encode_cpp(value),
-            );
+    fn put(&mut self, name: &str, e: Enc) {
+        for dir in &self.dirs {
+            let path = dir.join(name);
+            fs::write(&path, &e.0).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         }
+        self.written += 1;
     }
 }
 
-fn no_cpp<T>(_: &T) -> Vec<u8> {
-    Vec::new()
+fn flip(mut bytes: Vec<u8>, index: usize) -> Vec<u8> {
+    bytes[index] ^= 0x01;
+    bytes
 }
 
 fn main() {
@@ -438,262 +323,547 @@ fn main() {
     let hkdf = cases("hkdf_sha256_rfc5869.json");
     let hmac = cases("hmac_sha256_rfc4231.json");
     let ecdsa = cases("ecdsa_p256_rfc6979.json");
-    let mut w = Writer { written: 0 };
-
-    // aead_open: published vectors (open succeeds once AEAD is real), plus a flipped tag.
-    let rfc8439 = aead_case(named(&chacha, "RFC 8439 2.8.2"), 2);
-    let tc16 = aead_case(named(&gcm, "GCM spec Test Case 16"), 1);
-    let aead_seeds = [
-        ("rfc8439-2.8.2", rfc8439.clone()),
-        ("rfc8439-a.5", aead_case(named(&chacha, "RFC 8439 A.5"), 2)),
-        (
-            "gcm-tc13",
-            aead_case(named(&gcm, "GCM spec Test Case 13"), 1),
-        ),
-        (
-            "gcm-tc14",
-            aead_case(named(&gcm, "GCM spec Test Case 14"), 1),
-        ),
-        (
-            "gcm-tc15",
-            aead_case(named(&gcm, "GCM spec Test Case 15"), 1),
-        ),
-        ("gcm-tc16", tc16.clone()),
-        (
-            "rfc8439-2.8.2-bad-tag",
-            AeadOpenInput {
-                tag: flip(rfc8439.tag),
-                ..rfc8439.clone()
-            },
-        ),
-        (
-            "gcm-tc16-bad-tag",
-            AeadOpenInput {
-                tag: flip(tc16.tag),
-                ..tc16.clone()
-            },
-        ),
-    ];
-    for (name, input) in &aead_seeds {
-        w.seed(
-            "aead_open",
-            Some("fuzz_aead_open"),
-            name,
-            input,
-            rust_aead_open,
-            cpp_aead_open,
-        );
-    }
-
-    // hkdf: RFC 5869 A.1-A.3 at their own lengths, plus A.1's inputs at and past the cap.
-    let rfc5869 = [
-        ("rfc5869-a.1", "RFC 5869 A.1"),
-        ("rfc5869-a.2", "RFC 5869 A.2"),
-        ("rfc5869-a.3", "RFC 5869 A.3"),
-    ];
-    for (name, case) in rfc5869 {
-        let c = named(&hkdf, case);
-        let input = HkdfInput {
-            ikm: hex_field(c, "ikm"),
-            salt: hex_field(c, "salt"),
-            info: hex_field(c, "info"),
-            okm_len: usize::try_from(c["length"].as_u64().expect("length")).expect("fits"),
-        };
-        w.seed("hkdf", None, name, &input, rust_hkdf, no_cpp);
-    }
+    let rfc8439 = aead(named(&chacha, "RFC 8439 2.8.2"), 2);
+    let tc16 = aead(named(&gcm, "GCM spec Test Case 16"), 1);
     let a1 = named(&hkdf, "RFC 5869 A.1");
-    for (name, okm_len) in [
-        ("rfc5869-a.1-okm-8160", 8160),
-        ("rfc5869-a.1-okm-8161", 8161),
-    ] {
-        let input = HkdfInput {
-            ikm: hex_field(a1, "ikm"),
-            salt: hex_field(a1, "salt"),
-            info: hex_field(a1, "info"),
-            okm_len,
-        };
-        w.seed("hkdf", None, name, &input, rust_hkdf, no_cpp);
-    }
-
-    // ffi_status: one published vector per function, plus NULL-pointer shapes from the matrix.
     let tc1 = named(&hmac, "RFC 4231 4.2 (Test Case 1)");
     let tc2 = named(&hmac, "RFC 4231 4.3 (Test Case 2)");
     let sample = &ecdsa[0];
-    let calls = [
-        (
-            "hmac-rfc4231-tc1",
-            StatelessCall::Hmac {
-                key: buf(&hex_field(tc1, "key")),
-                msg: buf(&hex_field(tc1, "data")),
-                out_null: false,
-            },
-        ),
-        (
-            "hmac-msg-null-len-0",
-            StatelessCall::Hmac {
-                key: buf(&hex_field(tc2, "key")),
-                msg: null_buf(&[]),
-                out_null: false,
-            },
-        ),
-        (
-            "hmac-verify-rfc4231-tc2",
-            StatelessCall::HmacVerify {
-                key: buf(&hex_field(tc2, "key")),
-                msg: buf(&hex_field(tc2, "data")),
-                tag: buf(&hex_field(tc2, "mac")),
-            },
-        ),
-        (
-            "hkdf-rfc5869-a.1",
-            StatelessCall::Hkdf {
-                ikm: buf(&hex_field(a1, "ikm")),
-                salt: buf(&hex_field(a1, "salt")),
-                info: buf(&hex_field(a1, "info")),
-                okm_null: false,
-                okm_len: 42,
-            },
-        ),
-        (
-            "aead-seal-rfc8439-2.8.2",
-            StatelessCall::AeadSeal {
-                alg: 2,
-                key: buf(&rfc8439.key),
-                nonce: buf(&rfc8439.nonce),
-                aad: buf(&rfc8439.aad),
-                pt: buf(&hex_field(named(&chacha, "RFC 8439 2.8.2"), "pt")),
-                ct_out_null: false,
-                tag_out_null: false,
-            },
-        ),
-        (
-            "aead-seal-ct-out-null-alg-99",
-            StatelessCall::AeadSeal {
-                alg: 99,
-                key: buf(&tc16.key),
-                nonce: buf(&tc16.nonce),
-                aad: buf(&[]),
-                pt: buf(&[0x01]),
-                ct_out_null: true,
-                tag_out_null: false,
-            },
-        ),
-        (
-            "aead-open-gcm-tc16",
-            StatelessCall::AeadOpen {
-                alg: 1,
-                key: buf(&tc16.key),
-                nonce: buf(&tc16.nonce),
-                aad: buf(&tc16.aad),
-                ct: buf(&tc16.ct),
-                tag_null: false,
-                tag: tc16.tag,
-                pt_out_null: false,
-            },
-        ),
-        (
-            "ecdsa-rfc6979-sample",
-            StatelessCall::EcdsaVerify {
-                public_key_null: false,
-                public_key: fixed(&hex_field(sample, "public_key")),
-                msg: buf(&hex_field(sample, "msg")),
-                sig_null: false,
-                sig: fixed(&hex_field(sample, "sig")),
-            },
-        ),
-    ];
-    for (name, call) in &calls {
-        w.seed(
-            "ffi_status",
-            Some("fuzz_ffi_status"),
-            name,
-            call,
-            rust_stateless,
-            cpp_stateless,
-        );
-    }
+    let mut total = 0;
 
-    // unwrap_blob: a real wrap (succeeds once the store is real), a tampered one, and shapes
-    // from the error matrix.
-    let id: [u8; 16] = *b"ekibridge-fuzz-1";
-    let label = b"fuzz-unwrapped".to_vec();
-    let base = UnwrapInput {
-        from_wrap: true,
-        blob: Vec::new(),
-        alg: 2,
-        id,
-        label,
+    // aead_open: alg, key, nonce, aad, ct, tag.
+    let mut t = Target::new("aead_open", "fuzz_aead_open");
+    let open = |v: &Aead, tag: &[u8]| {
+        Enc::default()
+            .i32(v.alg)
+            .bytes(&v.key)
+            .bytes(&v.nonce)
+            .bytes(&v.aad)
+            .bytes(&v.ct)
+            .array(tag)
+    };
+    t.put("rfc8439-2.8.2", open(&rfc8439, &rfc8439.tag));
+    t.put(
+        "rfc8439-2.8.2-bad-tag",
+        open(&rfc8439, &flip(rfc8439.tag.clone(), 0)),
+    );
+    let a5 = aead(named(&chacha, "RFC 8439 A.5"), 2);
+    t.put("rfc8439-a.5", open(&a5, &a5.tag));
+    for n in 13..=16 {
+        let v = aead(named(&gcm, &format!("GCM spec Test Case {n}")), 1);
+        t.put(&format!("gcm-tc{n}"), open(&v, &v.tag));
+    }
+    t.put("gcm-tc16-bad-tag", open(&tc16, &flip(tc16.tag.clone(), 0)));
+    total += t.written;
+
+    // hkdf: ikm, salt, info, two lengths.
+    let mut t = Target::new("hkdf", "fuzz_hkdf");
+    let derive = |c: &Value, l1: usize, l2: usize| {
+        Enc::default()
+            .bytes(&hex_field(c, "ikm"))
+            .bytes(&hex_field(c, "salt"))
+            .bytes(&hex_field(c, "info"))
+            .u16(l1)
+            .u16(l2)
+    };
+    for (name, case) in [
+        ("a.1", "RFC 5869 A.1"),
+        ("a.2", "RFC 5869 A.2"),
+        ("a.3", "RFC 5869 A.3"),
+    ] {
+        let c = named(&hkdf, case);
+        let len = usize::try_from(c["length"].as_u64().expect("length")).expect("fits");
+        t.put(&format!("rfc5869-{name}"), derive(c, len, 1));
+    }
+    t.put("rfc5869-a.1-okm-8160-8161", derive(a1, 8160, 8161));
+    t.put("rfc5869-a.1-okm-0", derive(a1, 0, 42));
+    total += t.written;
+
+    // audit_verify: head mode, [head], file.
+    let (log, head) = audit_log();
+    let lines: Vec<&[u8]> = log.split_inclusive(|&b| b == b'\n').collect();
+    let full_head = audit_rebuild(&log).expect("valid").hash;
+    let mut t = Target::new("audit_verify", "fuzz_audit_verify");
+    t.put("empty", Enc::default().u8(0));
+    t.put("library-log", Enc::default().u8(0).array(&log));
+    t.put("library-log-head", Enc::default().u8(1).array(&log));
+    t.put(
+        "library-log-raw-head",
+        Enc::default().u8(2).array(&full_head).array(&log),
+    );
+    let cut = lines[..lines.len() - 1].concat();
+    t.put("tail-cut", Enc::default().u8(0).array(&cut));
+    t.put(
+        "tail-cut-full-head",
+        Enc::default().u8(2).array(&full_head).array(&cut),
+    );
+    t.put(
+        "head-before-close",
+        Enc::default().u8(2).array(&head).array(&cut),
+    );
+    let middle = [lines[0], lines[2]].concat();
+    t.put("middle-line-removed", Enc::default().u8(0).array(&middle));
+    t.put(
+        "byte-flipped",
+        Enc::default().u8(0).array(&flip(log.clone(), 40)),
+    );
+    t.put(
+        "no-final-newline",
+        Enc::default().u8(0).array(&log[..log.len() - 1]),
+    );
+    t.put("one-record", Enc::default().u8(1).array(lines[0]));
+    total += t.written;
+
+    // hybrid_kem: mode 0 masks, mode 1 sk and ct, mode 2 pk.
+    let mut t = Target::new("hybrid_kem", "fuzz_hybrid_kem");
+    t.put("round-trip", Enc::default().u8(0).bytes(b"").bytes(b""));
+    let mut ct_mask = vec![0_u8; 40];
+    ct_mask[39] = 0x01;
+    t.put(
+        "round-trip-mlkem-ct-flip",
+        Enc::default().u8(0).bytes(b"").bytes(&ct_mask),
+    );
+    t.put(
+        "round-trip-x25519-ct-flip",
+        Enc::default().u8(0).bytes(b"").bytes(&[0x01]),
+    );
+    t.put(
+        "round-trip-pk-flip",
+        Enc::default().u8(0).bytes(&[0, 0x01]).bytes(b""),
+    );
+    t.put("decap-zeros", Enc::default().u8(1).bytes(b"").bytes(b""));
+    t.put("encap-zeros", Enc::default().u8(2).bytes(b""));
+    if let Some((pk, sk, ct)) = kem() {
+        t.put("decap-library", Enc::default().u8(1).bytes(&sk).bytes(&ct));
+        let mut zero_x25519 = ct.clone();
+        zero_x25519[..32].fill(0);
+        t.put(
+            "decap-x25519-zero",
+            Enc::default().u8(1).bytes(&sk).bytes(&zero_x25519),
+        );
+        t.put("encap-library", Enc::default().u8(2).bytes(&pk));
+        let mut zero_x25519 = pk.clone();
+        zero_x25519[..32].fill(0);
+        t.put(
+            "encap-x25519-zero",
+            Enc::default().u8(2).bytes(&zero_x25519),
+        );
+    } else {
+        println!("hybrid KEM seeds from the library skipped: built without the pq feature");
+    }
+    total += t.written;
+
+    // ecdsa_sign_verify: msg, tamper mode, mask.
+    let mut t = Target::new("ecdsa_sign_verify", "fuzz_ecdsa_sign_verify");
+    let msg = hex_field(sample, "msg");
+    for (name, mode, mask) in [
+        ("sample", 0, &[][..]),
+        ("sample-sig-flip", 1, &[0x01][..]),
+        ("sample-msg-extended", 2, &[0, 0, 0, 0, 0, 0, b'!'][..]),
+        ("sample-pk-flip", 3, &[0, 0, 0x01][..]),
+        ("empty-message", 0, &[][..]),
+    ] {
+        let m = if name == "empty-message" {
+            &[][..]
+        } else {
+            &msg[..]
+        };
+        t.put(name, Enc::default().bytes(m).u8(mode).bytes(mask));
+    }
+    total += t.written;
+
+    // unwrap_blob: use_config, [config], from_wrap, blob, alg, id, label.
+    let mut t = Target::new("unwrap_blob", "fuzz_ks_unwrap");
+    let id = *b"ekibridge-fuzz-1";
+    let unwrap = |config: Option<&Cfg>, from_wrap: bool, blob: &[u8], alg: i32| {
+        let mut e = Enc::default().bool(config.is_some());
+        if let Some(c) = config {
+            e = e.config(c);
+        }
+        e.bool(from_wrap).bytes(blob).i32(alg).array(&id)
     };
     let rfc3394 = hex::decode(RFC3394_4_6_WRAPPED).expect("hex");
-    let unwraps = [
-        ("wrapped-hmac-key", base.clone()),
-        (
-            "wrapped-hmac-key-as-aes",
-            UnwrapInput {
-                alg: 1,
-                ..base.clone()
-            },
-        ),
-        (
-            "wrapped-hmac-key-byte-flipped",
-            UnwrapInput {
-                blob: vec![0, 0, 0, 0x80],
-                ..base.clone()
-            },
-        ),
-        (
-            "rfc3394-4.6",
-            UnwrapInput {
-                from_wrap: false,
-                blob: rfc3394.clone(),
-                ..base.clone()
-            },
-        ),
-        (
-            "rfc3394-4.6-short",
-            UnwrapInput {
-                from_wrap: false,
-                blob: rfc3394[..39].to_vec(),
-                ..base.clone()
-            },
-        ),
-        (
-            "alg-ecdsa",
-            UnwrapInput {
-                alg: 3,
-                ..base.clone()
-            },
-        ),
-        (
-            "label-65-bytes",
-            UnwrapInput {
-                label: vec![b'x'; 65],
-                ..base.clone()
-            },
-        ),
-        (
-            "label-control-byte",
-            UnwrapInput {
-                label: b"bad\x01label".to_vec(),
-                ..base.clone()
-            },
-        ),
-    ];
-    for (name, input) in &unwraps {
-        w.seed(
-            "unwrap_blob",
-            Some("fuzz_ks_unwrap"),
-            name,
-            input,
-            rust_unwrap,
-            cpp_unwrap,
-        );
+    t.put(
+        "wrapped-hmac-key",
+        unwrap(None, true, b"", 2).label(b"fuzz-unwrapped"),
+    );
+    t.put(
+        "wrapped-hmac-key-as-aes",
+        unwrap(None, true, b"", 1).label(b"fuzz-unwrapped"),
+    );
+    t.put(
+        "wrapped-hmac-key-byte-flipped",
+        unwrap(None, true, &[0, 0, 0, 0x80], 2).label(b"fuzz-unwrapped"),
+    );
+    t.put("rfc3394-4.6", unwrap(None, false, &rfc3394, 2).label(b"x"));
+    t.put(
+        "rfc3394-4.6-short",
+        unwrap(None, false, &rfc3394[..39], 2).label(b"x"),
+    );
+    t.put("alg-ecdsa", unwrap(None, true, b"", 3).label(b"x"));
+    t.put("label-65-bytes", unwrap(None, true, b"", 2).label_65(b""));
+    t.put(
+        "label-control-byte",
+        unwrap(None, true, b"", 2).label(b"bad\x01label"),
+    );
+    t.put("label-null", unwrap(None, true, b"", 2).null_label());
+    let dual = Cfg::dual(&[0, 1, 2]);
+    t.put(
+        "config-audit-dual",
+        unwrap(Some(&dual), true, b"", 2).label(b"fuzz-unwrapped"),
+    );
+    let pkcs11 = Cfg {
+        backend: 2,
+        flags: 7,
+        token_label: b"fuzz-token",
+        pin: b"0000",
+        ..Cfg::software()
+    };
+    t.put(
+        "config-pkcs11-no-module",
+        unwrap(Some(&pkcs11), true, b"", 2).label(b"x"),
+    );
+    let raw_approvers = Cfg {
+        count: 2,
+        source: 1,
+        raw_keys: vec![0x04; 130],
+        ..Cfg::software()
+    };
+    t.put(
+        "config-raw-approvers",
+        unwrap(Some(&raw_approvers), true, b"", 2).label(b"x"),
+    );
+    t.put(
+        "config-duplicate-approvers",
+        unwrap(Some(&Cfg::dual(&[1, 1])), true, b"", 2).label(b"x"),
+    );
+    total += t.written;
+
+    // ffi_status: the session's store, then calls.
+    let mut t = Target::new("ffi_status", "fuzz_ffi_status");
+    let none = || Enc::default().u8(0);
+    t.put(
+        "hmac-rfc4231-tc1",
+        none()
+            .u8(0)
+            .buf(false, &hex_field(tc1, "key"))
+            .buf(false, &hex_field(tc1, "data"))
+            .bool(false),
+    );
+    t.put(
+        "hmac-verify-rfc4231-tc2",
+        none()
+            .u8(1)
+            .buf(false, &hex_field(tc2, "key"))
+            .buf(false, &hex_field(tc2, "data"))
+            .buf(false, &hex_field(tc2, "mac")),
+    );
+    let hkdf_call = |e: Enc, ikm_mode: u8, okm_mode: u8| {
+        e.u8(2)
+            .buf(false, &hex_field(a1, "ikm"))
+            .len(ikm_mode)
+            .buf(false, &hex_field(a1, "salt"))
+            .len(0)
+            .buf(false, &hex_field(a1, "info"))
+            .len(0)
+            .bool(false)
+            .u16(42)
+            .len(okm_mode)
+    };
+    t.put("hkdf-rfc5869-a.1", hkdf_call(none(), 0, 0));
+    t.put(
+        "hkdf-lengths-over-cap",
+        hkdf_call(hkdf_call(none(), 2, 0), 0, 3),
+    );
+    let seal = |e: Enc, v: &Aead, pt_mode: u8| {
+        e.u8(3)
+            .i32(v.alg)
+            .buf(false, &v.key)
+            .buf(false, &v.nonce)
+            .buf(false, &v.aad)
+            .buf(false, &v.pt)
+            .len(pt_mode)
+            .bool(false)
+            .bool(false)
+    };
+    let open_call = |e: Enc, v: &Aead, ct_mode: u8| {
+        e.u8(4)
+            .i32(v.alg)
+            .buf(false, &v.key)
+            .buf(false, &v.nonce)
+            .buf(false, &v.aad)
+            .buf(false, &v.ct)
+            .len(ct_mode)
+            .bool(false)
+            .array(&v.tag)
+            .bool(false)
+    };
+    t.put("aead-seal-rfc8439-2.8.2", seal(none(), &rfc8439, 0));
+    t.put("aead-open-gcm-tc16", open_call(none(), &tc16, 0));
+    t.put(
+        "aead-lengths-over-cap",
+        open_call(seal(none(), &rfc8439, 2), &tc16, 3),
+    );
+    t.put(
+        "ecdsa-rfc6979-sample",
+        none()
+            .u8(5)
+            .bool(false)
+            .array(&hex_field(sample, "public_key"))
+            .buf(false, &hex_field(sample, "msg"))
+            .bool(false)
+            .array(&hex_field(sample, "sig")),
+    );
+    t.put(
+        "null-pointers",
+        none()
+            .u8(0)
+            .buf(false, b"k")
+            .buf(true, b"")
+            .bool(true)
+            .u8(3)
+            .i32(99)
+            .buf(false, &tc16.key)
+            .buf(false, &tc16.nonce)
+            .buf(false, b"")
+            .buf(false, &[1])
+            .len(0)
+            .bool(true)
+            .bool(false)
+            .u8(1)
+            .buf(false, b"k")
+            .buf(false, b"m")
+            .buf(true, b""),
+    );
+    t.put(
+        "kem-chain",
+        none()
+            .u8(6)
+            .bool(false)
+            .bool(false)
+            .u8(7)
+            .bool(false)
+            .bool(true)
+            .bytes(b"")
+            .bool(false)
+            .bool(false)
+            .u8(8)
+            .bool(false)
+            .bool(true)
+            .bytes(b"")
+            .bool(false)
+            .bool(true)
+            .bytes(b"")
+            .bool(false),
+    );
+    let mut paths = none();
+    for choice in 0..6 {
+        paths = paths.u8(9).u8(choice).u8(0).bool(false);
     }
+    t.put("audit-verify-paths", paths);
+    let mut meta = none();
+    for value in [0, 12, 13, -1, i32::MIN, i32::MAX] {
+        meta = meta.u8(10).i32(value);
+    }
+    t.put("metadata", meta);
+    let open_op = |e: Enc, op: u8, c: &Cfg| e.u8(op).bool(false).bool(false).config(c);
+    let mut opens = none();
+    for c in [
+        Cfg {
+            backend: 0,
+            ..Cfg::software()
+        },
+        Cfg {
+            backend: 2,
+            ..Cfg::software()
+        },
+        pkcs11.clone(),
+        Cfg {
+            flags: 7,
+            backend: 2,
+            token_label: b"a-token-label-longer-than-32-bytes",
+            pin: b"0000",
+            ..Cfg::software()
+        },
+        Cfg {
+            audit: 2,
+            ..Cfg::software()
+        },
+        Cfg {
+            audit: 3,
+            ..Cfg::software()
+        },
+        Cfg {
+            audit: 4,
+            ..Cfg::software()
+        },
+        Cfg {
+            audit: 5,
+            ..Cfg::software()
+        },
+        Cfg {
+            count: 1,
+            ..Cfg::software()
+        },
+        Cfg {
+            count: 255,
+            source: 1,
+            ..Cfg::software()
+        },
+        raw_approvers.clone(),
+        Cfg::dual(&[1, 1]),
+        Cfg::dual(&[0, 1, 2, 3]),
+    ] {
+        opens = open_op(open_op(opens, 11, &c), 12, &c);
+    }
+    t.put("open-configurations", opens);
 
-    println!("wrote {} seed files", w.written);
-}
+    let v1 = Enc::default().u8(1).config(&Cfg::software());
+    t.put(
+        "store-lifecycle",
+        v1.u8(14)
+            .bool(false)
+            .i32(2)
+            .label(b"mac")
+            .bool(false)
+            .u8(19)
+            .bool(false)
+            .known(0)
+            .buf(false, b"message")
+            .bool(false)
+            .u8(20)
+            .bool(false)
+            .known(0)
+            .buf(false, b"message")
+            .buf(false, &[0; 32])
+            .u8(14)
+            .bool(false)
+            .i32(1)
+            .label(b"kek")
+            .bool(false)
+            .u8(21)
+            .bool(false)
+            .known(1)
+            .known(0)
+            .bool(false)
+            .u8(22)
+            .bool(false)
+            .known(1)
+            .bool(true)
+            .buf(false, b"")
+            .i32(2)
+            .label(b"unwrapped")
+            .raw_id(&id)
+            .u8(14)
+            .bool(false)
+            .i32(3)
+            .label(b"signer")
+            .bool(false)
+            .u8(18)
+            .bool(false)
+            .known(3)
+            .buf(false, b"message")
+            .bool(false)
+            .u8(17)
+            .bool(false)
+            .known(3)
+            .bool(false)
+            .u8(24)
+            .bool(false)
+            .known(0)
+            .bool(false)
+            .u8(25)
+            .bool(false)
+            .known(1)
+            .u8(15)
+            .bool(false)
+            .known(0)
+            .bool(false)
+            .u8(16)
+            .bool(false)
+            .known(1)
+            .bool(false)
+            .u8(23)
+            .bool(false)
+            .known(2)
+            .u8(13)
+            .bool(false)
+            .bool(false)
+            .u16(64)
+            .u8(23)
+            .bool(false)
+            .null_id(),
+    );
+    let v2 = Enc::default().u8(2).config(&Cfg::dual(&[0, 1]));
+    let approve = |e: Enc, approver: u8| {
+        e.u8(27)
+            .bool(false)
+            .bool(false)
+            .array(&[0; 32])
+            .bool(true)
+            .bool(false)
+            .array(&[0; 65])
+            .bool(true)
+            .u8(approver)
+            .bool(false)
+            .array(&[0; 64])
+            .bool(true)
+            .u8(approver)
+            .bool(false)
+    };
+    let dual_seq = v2
+        .u8(14)
+        .bool(false)
+        .i32(2)
+        .label(b"doomed")
+        .bool(false)
+        .u8(23)
+        .bool(false)
+        .known(0)
+        .u8(26)
+        .bool(false)
+        .known(0)
+        .bool(false);
+    let dual_seq = approve(approve(approve(dual_seq, 0), 0), 1)
+        .u8(28)
+        .bool(false)
+        .bool(false)
+        .bool(false)
+        .u8(9)
+        .u8(1)
+        .u8(2)
+        .bool(false)
+        .u8(12)
+        .bool(false)
+        .bool(false)
+        .config(&Cfg::audited());
+    t.put("store-audit-dual-control", dual_seq);
+    let mut handle_null = Enc::default().u8(2).config(&Cfg::audited());
+    for op in 13..=28 {
+        handle_null = handle_null.u8(op).bool(true);
+        handle_null = match op {
+            13 => handle_null.bool(false).u16(16),
+            14 => handle_null.i32(1).label(b"x").bool(false),
+            15..=17 | 24 | 26 => handle_null.known(0).bool(false),
+            18 | 19 => handle_null.known(0).buf(false, b"m").bool(false),
+            20 => handle_null.known(0).buf(false, b"m").buf(false, &[0; 32]),
+            21 => handle_null.known(0).known(0).bool(false),
+            22 => handle_null
+                .known(0)
+                .bool(false)
+                .buf(false, &[0; 40])
+                .i32(1)
+                .label(b"x")
+                .raw_id(&id),
+            23 | 25 => handle_null.known(0),
+            27 => approve(Enc::default(), 0).0[2..]
+                .iter()
+                .fold(handle_null, |e, &b| e.u8(b)),
+            _ => handle_null.bool(false).bool(false),
+        };
+    }
+    t.put("handle-null", handle_null);
+    total += t.written;
 
-fn flip(mut tag: [u8; 16]) -> [u8; 16] {
-    tag[0] ^= 0x01;
-    tag
+    println!("wrote {total} seeds to each of the two corpora");
 }

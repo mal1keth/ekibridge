@@ -91,7 +91,7 @@ A module moves to the Rust implementation only when every item is checked.
       [contract](ffi-contract.md#per-function-contract)).
 - [ ] **Fuzzing.** The module's fuzz targets in both libraries have run for the agreed number of
       CPU hours with no open finding ([findings](findings.md),
-      [what the fuzzers cover](threat-model.md#what-the-fuzzers-cover-and-do-not)).
+      [what the fuzzers cover](threat-model.md#fuzz-targets)).
 - [ ] **Sanitizers and Miri.** The C++ unit tests pass under AddressSanitizer and
       UndefinedBehaviorSanitizer (`cmake --preset asan && cmake --build --preset asan && ctest
       --preset asan`), and the Miri job of `.github/workflows/rust.yml` passes.
