@@ -26,8 +26,9 @@ module.
 The project is in progress. I started it in October 2026, and no release is tagged yet.
 
 Every exported function is implemented in both libraries and passes the conformance harness. A
-first fuzzing campaign of both libraries found nothing, though the Rust `ffi_status` target did
-not reach its planned 200000 executions ([findings](docs/findings.md)). The ABI is at version 2,
+first fuzzing campaign of both libraries found nothing. The Rust `ffi_status` target fell short
+of its planned 200000 executions on the Mac and reached them in a later run on Linux
+([findings](docs/findings.md)). The ABI is at version 2,
 which added key lifecycle states, the audit log and dual control of destroy. The benchmark table
 is not filled in yet. So far I have built and tested the implementation on macOS (Apple silicon)
 only. The CI workflows also run on Ubuntu 24.04, but they last ran there against the scaffolding,

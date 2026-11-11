@@ -67,8 +67,8 @@ RFC 6979 A.2.5), a seal/open round trip per AEAD algorithm, invalid arguments (i
 unknown algorithm name) and authentication failures. On a native target the test file compiles to
 nothing.
 
-I have run them under Node on macOS (Apple silicon) only. The `bindings` workflow is set up to run
-them on Ubuntu 24.04; it has not run yet.
+I have run them by hand under Node on macOS (Apple silicon) only. The `bindings` workflow runs
+them on Ubuntu 24.04.
 
 ## Secrets cross as copies
 

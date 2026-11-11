@@ -261,11 +261,13 @@ did not reach that count in four runs. I stopped the first default-features run 
 executions, after 2008 s; its rerun and both `pq` runs ended at their time limits, at 17795,
 76679 and 82638 executions. None of the four found anything. The target is slow because each
 logged call flushes the audit log with `F_FULLFSYNC` on macOS, and the machine also slept during
-the runs.
+the runs. A follow-up run on a Linux server, where the flush is `fdatasync` and nothing sleeps,
+took both builds of the target to 200000 executions in about twelve minutes each, again with no
+finding.
 
 `.github/workflows/fuzz.yml` runs every target from its committed seeds for at most 200000
 executions or two minutes, whichever comes first, on each push and pull request and once a week.
-That is a smoke test, not a campaign, and it has not yet run against the implemented functions.
+That is a smoke test, not a campaign.
 
 ## Limits
 
@@ -322,9 +324,9 @@ That is a smoke test, not a campaign, and it has not yet run against the impleme
   written by the C++ library; the Rust library fails the write instead.
 - The flush is slow, which shows in fuzzing throughput. The Rust `ffi_status` target flushes a
   record per logged call and ran at about 200 executions per second on an idle machine; it did
-  not reach 200000 executions in any run of the 2026-11-11 campaign
-  ([findings.md](findings.md)). The C++ target reached 200000 executions in 103 s in that
-  campaign, when the C++ library still flushed with `fsync`.
+  not reach 200000 executions in any run of the 2026-11-11 campaign on the Mac, and did in a
+  later run on Linux ([findings.md](findings.md)). The C++ target reached 200000 executions in
+  103 s in that campaign, when the C++ library still flushed with `fsync`.
 
 ### Timing and threads
 

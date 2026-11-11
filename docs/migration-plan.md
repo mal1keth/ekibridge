@@ -130,7 +130,8 @@ A module moves to the Rust implementation only when every item is checked.
 - [ ] The module's fuzz targets in both libraries have run for the agreed number of CPU hours
       with no open finding ([findings](findings.md),
       [what the fuzzers cover](threat-model.md#fuzz-targets)). The one campaign recorded so far
-      aimed at 200000 executions per target, which the Rust `ffi_status` target did not reach.
+      aimed at 200000 executions per target; the Rust `ffi_status` target reached that count only
+      in a follow-up run on Linux.
 - [ ] The C++ unit tests pass under AddressSanitizer and UndefinedBehaviorSanitizer
       (`cmake --preset asan && cmake --build --preset asan && ctest --preset asan`), and the Miri
       job of `.github/workflows/rust.yml` passes.

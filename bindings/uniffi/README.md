@@ -76,8 +76,8 @@ Swift toolchain is part of this repository's builds.
 On the Rust side, `cargo test -p ekicore-uniffi` checks that every `Error` variant maps to the
 variant of the same name and that its message is the status name.
 
-I have run these tests on macOS (Apple silicon) only. The `bindings` workflow is set up to run
-them on Ubuntu 24.04 and macOS 15; it has not run yet.
+I have run these tests by hand on macOS (Apple silicon) only. The `bindings` workflow runs them
+on Ubuntu 24.04 and macOS 15.
 
 ## Secrets cross as copies
 

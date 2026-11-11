@@ -3,7 +3,8 @@
 This is the log of fuzzing campaigns. It is for anyone who wants to know how much fuzzing stands
 behind a claim made elsewhere in this repository, and what the fuzzing found. A bug found by
 fuzzing, the sanitizers, Miri or the conformance harness is recorded here as well, and it stays
-in the table after it is fixed. So far the log holds one campaign and no bug.
+in the table after it is fixed. So far the log holds one campaign, one follow-up run on Linux
+and no bug.
 
 ## How to read the table
 
@@ -19,6 +20,27 @@ There is one row per run of a target, newest first.
 The coverage figures of the two languages cannot be compared with each other. The Rust figures
 count edges in `ekicore-rs` and the RustCrypto crates; the C++ figures count edges in
 `libekicore` only, because OpenSSL is not instrumented.
+
+## Follow-up run on Linux, 2026-11-11
+
+The campaign below left the Rust `ffi_status` target short of its 200000 executions, so I ran
+that target again on a Linux server. Neither thing that held it back on the Mac applies there:
+`sync_data` is `fdatasync` on Linux, and the machine does not sleep. The server is an x86-64
+virtual machine with 4 cores, Debian 13 and kernel 6.12. The build was the same as in the
+campaign (cargo-fuzz 0.13.2, a release build with AddressSanitizer, debug assertions and overflow
+checks), with rustc 1.102.0-nightly of 2026-11-10; the second run adds `--features pq`. Both runs
+started from the 16 committed seeds, copied to a scratch directory, with `-runs=200000`, and ran
+side by side from 21:03 to 21:15 UTC. `TMPDIR` pointed at a directory on the ext4 disk, so the
+audit logs went to a real file system and not to the tmpfs that Debian mounts on `/tmp`.
+
+| Date | Target | Runs | Coverage | Result | Notes |
+|---|---|---|---|---|---|
+| 2026-11-11 | Rust `ffi_status`, `pq` | 200000 | 6088 (4647) | clean | Linux x86-64. 721 s, about 277 executions per second. |
+| 2026-11-11 | Rust `ffi_status` | 200000 | 5178 (3763) | clean | Linux x86-64. 716 s, about 279 executions per second. |
+
+Both runs reached the full count with no crash, no sanitizer report and no property failure. The
+coverage figures come from an x86-64 build and cannot be compared one to one with the arm64
+figures of the campaign below.
 
 ## Campaign of 2026-11-11
 
@@ -60,4 +82,5 @@ The Rust `ffi_status` target did not reach 200000 executions in either build. I 
 run by hand at 34510 executions; the other three runs ended at their time limits. Its longest
 clean runs are 34510 executions (default features) and 82638 (`pq`). Two things held it back:
 every logged call flushes the audit log with `F_FULLFSYNC` on macOS, and the machine went to
-sleep during each of the four runs. I have not yet run that target to the full count.
+sleep during each of the four runs. The follow-up run on Linux, above, took the target to the
+full count.
