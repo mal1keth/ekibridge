@@ -156,10 +156,14 @@ TEST_F(SecretBuffer, MoveAssignmentWipesAndReleasesTheTargetsPreviousStorage) {
   EXPECT_EQ(address_of(target.data()), source_address);
   EXPECT_EQ(target.size(), 16U);
   EXPECT_TRUE(holds_only(target.span(), 0x22));
+  // The state of the source after the move is what these lines test. The static analyzer of
+  // clang-tidy 18 follows the reference and reports the reads.
+  // NOLINTBEGIN(clang-analyzer-cplusplus.Move)
   EXPECT_TRUE(moved_from.empty());
   EXPECT_EQ(moved_from.size(), 0U);
   EXPECT_EQ(moved_from.data(), nullptr);
   EXPECT_TRUE(moved_from.span().empty());
+  // NOLINTEND(clang-analyzer-cplusplus.Move)
 }
 
 TEST_F(SecretBuffer, MoveAssignmentIntoAnEmptyTargetReleasesNothing) {
@@ -186,8 +190,11 @@ TEST_F(SecretBuffer, MoveConstructionTransfersTheStorageWithoutCopying) {
     EXPECT_EQ(address_of(moved.data()), address);
     EXPECT_EQ(moved.size(), 24U);
     EXPECT_TRUE(holds_only(moved.span(), kSecret));
+    // As above: the state of the moved-from buffer is what is tested.
+    // NOLINTBEGIN(clang-analyzer-cplusplus.Move)
     EXPECT_TRUE(moved_from.empty());
     EXPECT_EQ(moved_from.data(), nullptr);
+    // NOLINTEND(clang-analyzer-cplusplus.Move)
     EXPECT_EQ(recording_allocator::allocations.size(), 1U);
     EXPECT_TRUE(recording_allocator::releases.empty());
   }

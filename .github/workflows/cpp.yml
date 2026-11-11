@@ -101,5 +101,6 @@ jobs:
       - name: configure
         run: cmake --preset tidy
       # clang-tidy runs as part of the compile of every C++ source; any finding fails the build.
+      # -k 0 keeps going after a failure, so one run reports the findings of every source.
       - name: build
-        run: cmake --build --preset tidy
+        run: cmake --build --preset tidy -- -k 0

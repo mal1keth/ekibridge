@@ -103,6 +103,21 @@ endforeach()
 
 target_link_libraries(ekicore PRIVATE ekicore_primitives ekicore_warnings OpenSSL::Crypto)
 
+# The linker enforces the export list as well: the visibility flags do not reach symbols of
+# namespace std that the library instantiates (see ekicore.map). Sanitizer builds are left as
+# they were: they are for testing only, and which symbols the sanitizer runtimes need a library
+# to export has not been checked.
+if(NOT EKI_SANITIZE)
+  if(APPLE)
+    target_link_options(ekicore PRIVATE "-Wl,-exported_symbol,_eki_*")
+  elseif(UNIX)
+    target_link_options(ekicore PRIVATE
+      "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/ekicore.map")
+    set_property(TARGET ekicore APPEND PROPERTY
+      LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/ekicore.map")
+  endif()
+endif()
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT EKI_SANITIZE)
   foreach(_eki_target IN ITEMS ekicore ekicore_primitives)
     target_compile_options(${_eki_target} PRIVATE

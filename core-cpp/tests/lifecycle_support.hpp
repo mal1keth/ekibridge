@@ -115,12 +115,16 @@ inline testing::AssertionResult open_v2_succeeds(const eki_ks_config_v2& config)
   return testing::AssertionSuccess();
 }
 
-// The 68-byte message an approver signs ("Dual control" in docs/ffi-contract.md).
+// The 68-byte message an approver signs ("Dual control" in docs/ffi-contract.md). The vector is
+// made at its final size and filled in place. Growing it with insert is correct too, but GCC 13
+// at -O3 then reports a copy past the first 20 bytes (-Warray-bounds), as if the vector did not
+// reallocate.
 inline std::vector<std::uint8_t> approval_message(const Request& request, const eki_key_id& id) {
   constexpr std::string_view domain = "ekibridge-destroy-v1";
-  std::vector<std::uint8_t> message(domain.begin(), domain.end());
-  message.insert(message.end(), request.begin(), request.end());
-  message.insert(message.end(), std::begin(id.bytes), std::end(id.bytes));
+  std::vector<std::uint8_t> message(domain.size() + request.size() + std::size(id.bytes));
+  auto out = std::ranges::copy(domain, message.begin()).out;
+  out = std::ranges::copy(request, out).out;
+  std::ranges::copy(id.bytes, out);
   return message;
 }
 

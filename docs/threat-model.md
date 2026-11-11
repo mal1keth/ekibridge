@@ -16,8 +16,10 @@ and the Rust library under `core-rs/`.
 I develop and test on macOS (Apple silicon). On Linux the CI workflows build and test the
 implementation on Ubuntu 24.04. By hand I have run only parts of it on Linux (Debian 13, x86-64):
 the C++ tests built with GCC, the Miri selection and one fuzz target. The durability of the Linux
-flush path has not been tested, and I have run the PKCS#11 backend by hand only against SoftHSM2
-2.7.0 on macOS, not against the 2.6.1 that Ubuntu packages.
+flush path has not been tested. I have run the Rust PKCS#11 tests by hand only against SoftHSM2
+2.7.0 on macOS; on Linux the C++ tests have run against a 2.6.1 token in an Ubuntu 24.04
+container, and the conformance job exercises both PKCS#11 backends against the 2.6.1 that Ubuntu
+packages.
 
 ## What is protected
 

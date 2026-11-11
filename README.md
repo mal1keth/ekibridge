@@ -33,8 +33,10 @@ audit log and dual control of destroy. The benchmark table is not filled in yet.
 
 I develop and test on macOS (Apple silicon). On Linux the CI workflows build and test the
 implementation on Ubuntu 24.04, and the badges above show whether they pass. By hand I have run
-only parts of it on Linux (Debian 13, x86-64): the C++ tests built with GCC, the Miri selection
-and one fuzz target. The PKCS#11 backend I have run by hand only against SoftHSM2 2.7.0 on macOS.
+only parts of it on Linux: the C++ tests built with GCC (on Debian 13, and in an Ubuntu 24.04
+container with a SoftHSM2 2.6.1 token), the Miri selection and one fuzz target. The Rust PKCS#11
+tests I have run by hand only against SoftHSM2 2.7.0 on macOS; on Linux the conformance job
+exercises both PKCS#11 backends against Ubuntu's SoftHSM2.
 
 The table shows where each module stands.
 

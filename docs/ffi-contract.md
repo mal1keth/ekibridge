@@ -658,7 +658,11 @@ the semver equals the CMake project version and the Cargo package version.
 Optional features (`pkcs11`, `pq`) gate function bodies only, never declarations, so the header
 and the exported symbol set are the same in every build. A disabled function performs its NULL
 checks and returns `EKI_ERR_UNSUPPORTED`. Only `eki_*` symbols are exported, 32 of them
-([`scripts/check-exports.sh`](../scripts/check-exports.sh)).
+([`scripts/check-exports.sh`](../scripts/check-exports.sh)). In the C++ library the linker
+enforces the list, with a version script on Linux
+([`core-cpp/ekicore.map`](../core-cpp/ekicore.map)) and an exported-symbol pattern on macOS.
+Hidden visibility alone is not enough: the standard library's headers give their own symbols
+default visibility, and with GCC 13 one of them (`std::piecewise_construct`) was exported.
 
 ## Known limitations
 
@@ -677,11 +681,12 @@ checks and returns `EKI_ERR_UNSUPPORTED`. Only `eki_*` symbols are exported, 32 
   the chain plus a head kept elsewhere, and its durability on the file system honouring the flush
   (`F_FULLFSYNC` or `fsync`).
 - The implementation is developed and tested on macOS (Apple silicon). On Linux it is built and
-  tested by the CI workflows on Ubuntu 24.04; by hand only parts of it have run there (Debian 13,
-  x86-64: the C++ tests built with GCC, the Miri selection, one fuzz target). The durability of
-  the Linux flush path has not been tested, and the PKCS#11 backend has been run by hand only
-  against SoftHSM2 2.7.0 on macOS, not against the 2.6.1 that Ubuntu packages. SoftHSM2 behaviour
-  described in this document was observed on version 2.7.0.
+  tested by the CI workflows on Ubuntu 24.04; by hand only parts of it have run there (the C++
+  tests built with GCC, on Debian 13 and in an Ubuntu 24.04 container with a SoftHSM2 2.6.1
+  token; the Miri selection; one fuzz target). The durability of the Linux flush path has not
+  been tested. The Rust PKCS#11 tests have been run by hand only against SoftHSM2 2.7.0 on macOS;
+  on Linux the conformance job exercises both PKCS#11 backends against the 2.6.1 that Ubuntu
+  packages. SoftHSM2 behaviour described in this document was observed on version 2.7.0.
 
 With the PKCS#11 backend:
 

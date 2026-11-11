@@ -1,0 +1,10 @@
+/* The symbols libekicore exports on ELF platforms: the eki_* functions and nothing else.
+   -fvisibility=hidden hides the library's own symbols, but the headers of the standard library
+   give the symbols of namespace std default visibility, so one that the library instantiates
+   (std::piecewise_construct with GCC 13) would be exported without this list. */
+{
+  global:
+    eki_*;
+  local:
+    *;
+};
