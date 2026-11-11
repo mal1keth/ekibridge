@@ -31,14 +31,9 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@v2
-      # scripts/bench.sh is added by the benchmark package.
+      # Builds both libraries in release mode, runs both suites and writes bench-results/.
       - name: run benchmarks
-        run: |
-          if [ -x scripts/bench.sh ]; then
-            scripts/bench.sh
-          else
-            echo "scripts/bench.sh not present yet; nothing to run"
-          fi
+        run: scripts/bench.sh
       - uses: actions/upload-artifact@v7
         with:
           name: bench-results

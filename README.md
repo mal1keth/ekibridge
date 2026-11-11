@@ -1,7 +1,7 @@
 # ekibridge
 
 One small cryptographic core, implemented twice (C++ on OpenSSL and Rust on RustCrypto) behind a
-single C ABI, with a conformance harness that proves the two are interchangeable.
+single C ABI, with a conformance harness that checks the two are interchangeable.
 
 [![rust](https://github.com/mal1keth/ekibridge/actions/workflows/rust.yml/badge.svg)](https://github.com/mal1keth/ekibridge/actions/workflows/rust.yml)
 [![cpp](https://github.com/mal1keth/ekibridge/actions/workflows/cpp.yml/badge.svg)](https://github.com/mal1keth/ekibridge/actions/workflows/cpp.yml)
@@ -12,8 +12,10 @@ single C ABI, with a conformance harness that proves the two are interchangeable
 [![bindings](https://github.com/mal1keth/ekibridge/actions/workflows/bindings.yml/badge.svg)](https://github.com/mal1keth/ekibridge/actions/workflows/bindings.yml)
 
 **Status: in progress, started October 2026.** Every exported function is implemented in both
-libraries and passes the conformance harness; the fuzzing campaign is still to come. The table
-shows where each module stands.
+libraries and passes the conformance harness; the fuzzing campaign is still to come. No release is
+tagged yet. The ABI is at version 2, which added key lifecycle states, the audit log and dual
+control of destroy. The table shows where each module stands; benchmark results are not recorded
+yet.
 
 | Module | C++ | Rust | Conformance | Fuzz |
 |---|---|---|---|---|
@@ -36,7 +38,10 @@ shows where each module stands.
 ekibridge is a small cryptographic library with four jobs: HMAC-SHA256, HKDF-SHA256, authenticated
 encryption (AES-256-GCM and ChaCha20-Poly1305), and a key store that generates, signs with, wraps
 and unwraps keys either in memory or inside a hardware security module through PKCS#11 (SoftHSM2
-stands in for the hardware). A hybrid post-quantum key exchange (X25519 + ML-KEM-768) is optional.
+stands in for the hardware). ECDSA P-256 signatures can be verified without a store. The key store
+tracks a lifecycle state per key (active, retired, revoked), can append every call to a
+hash-chained audit log, and can require two of up to eight approvers to sign before a key is
+destroyed. A hybrid post-quantum key exchange (X25519 + ML-KEM-768) is optional.
 
 It exists twice. `libekicore` is written in C++ on OpenSSL 3 and plays the part of an existing
 production core; `libekicore_rs` is written in Rust on RustCrypto and plays its replacement. Both
@@ -168,13 +173,43 @@ This creates a throwaway token labelled `ekibridge` under `.softhsm/` (user PIN 
 
 ### Conformance
 
-`scripts/run-conformance.sh` builds both libraries in release mode and runs the modules listed in `conformance/ci-modules.txt`:
+`scripts/run-conformance.sh` builds both libraries in release mode (CMake preset `release`, cargo
+`--release`) and runs conformance modules against both. Without `--with-pkcs11` the PKCS#11
+modules skip themselves.
 
 ```sh
-scripts/run-conformance.sh                 # modules enabled in CI
+scripts/run-conformance.sh                 # the modules listed in conformance/ci-modules.txt
 scripts/run-conformance.sh --all           # every module
-scripts/run-conformance.sh --with-pkcs11   # include PKCS#11 (source scripts/softhsm-init.sh first)
+scripts/run-conformance.sh --with-pkcs11   # PKCS#11 modules too (source softhsm-init.sh first)
+scripts/run-conformance.sh hmac aead       # just these modules
+EKI_PQ=1 scripts/run-conformance.sh pq     # both libraries built with the hybrid KEM
 ```
+
+`EKI_DIFF_N` sets the number of differential iterations per function (2000 by default). The
+hybrid KEM in the C++ library needs OpenSSL 3.5 or later.
+
+### Interop callers and the unsafe inventory
+
+```sh
+# A C++ program loads libekicore_rs and a Rust program loads libekicore, each by path
+scripts/interop-demo.sh
+
+# Every unsafe block of core-rs/src/ffi.rs with its SAFETY comment (fails on a missing one)
+scripts/unsafe-inventory.sh
+```
+
+[`scripts/stepca-demo.sh`](scripts/stepca-demo.sh) runs a step-ca certificate authority with its
+keys in a throwaway SoftHSM2 token. It needs step-ca, the step CLI, OpenSSL 4 with the libp11
+provider, `jq`, `curl` and `nc` (Homebrew paths by default), and is described in the
+[PKI note](docs/pki-note.md).
+
+### Benchmarks
+
+```sh
+scripts/bench.sh            # both suites through the C ABI, merged into one table
+```
+
+See [benchmarks](docs/benchmarks.md) for what is measured and how to read the table.
 
 ## Repository map
 
@@ -188,31 +223,39 @@ scripts/run-conformance.sh --with-pkcs11   # include PKCS#11 (source scripts/sof
 | [`interop/`](interop/) | small callers that `dlopen` a library given on the command line |
 | [`bindings/uniffi/`](bindings/uniffi/) | `ekicore-uniffi`: UniFFI bindings (Python tested; Kotlin, Swift generated) over the safe Rust API |
 | [`bindings/wasm/`](bindings/wasm/) | `ekicore-wasm`: the safe Rust API as WebAssembly for JavaScript, through wasm-bindgen |
-| [`scripts/`](scripts/) | header and export checks, SoftHSM2 setup, conformance, benchmarks |
-| [`docs/`](docs/) | contract, threat model, migration plan, benchmarks, findings |
-| [`.github/workflows/`](.github/workflows/) | CI: one workflow per concern |
-| [`CMakePresets.json`](CMakePresets.json), [`Cargo.toml`](Cargo.toml) | build entry points |
+| [`scripts/check-header.sh`](scripts/check-header.sh) | regenerates the header with cbindgen 0.29.4, compares it and compiles it as C11 and C++20 |
+| [`scripts/check-exports.sh`](scripts/check-exports.sh) | checks that both libraries export the `eki_*` symbols and nothing else |
+| [`scripts/softhsm-init.sh`](scripts/softhsm-init.sh) | creates the throwaway SoftHSM2 token and exports its variables (to be sourced) |
+| [`scripts/run-conformance.sh`](scripts/run-conformance.sh) | builds both libraries and runs the conformance modules |
+| [`scripts/interop-demo.sh`](scripts/interop-demo.sh) | builds and runs the interop callers across the language boundary |
+| [`scripts/unsafe-inventory.sh`](scripts/unsafe-inventory.sh) | lists every `unsafe` item of `core-rs/src/ffi.rs` with its SAFETY comment |
+| [`scripts/bench.sh`](scripts/bench.sh) | runs both benchmark suites and merges their results |
+| [`scripts/stepca-demo.sh`](scripts/stepca-demo.sh) | step-ca with its CA keys in a SoftHSM2 token, for the PKI note |
+| [`docs/`](docs/) | contract, threat model, migration plan, benchmarks, findings, PKI note |
+| [`.github/workflows/`](.github/workflows/) | CI: Rust, C++, header, conformance, fuzzing, hybrid KEM, bindings, benchmarks |
+| [`CMakeLists.txt`](CMakeLists.txt), [`CMakePresets.json`](CMakePresets.json), [`Cargo.toml`](Cargo.toml), [`rust-toolchain.toml`](rust-toolchain.toml) | build entry points and toolchain pin |
+| [`deny.toml`](deny.toml), [`.clang-format`](.clang-format), [`.clang-tidy`](.clang-tidy) | dependency policy, C++ formatting and lint configuration |
 
-## Design decisions
+## Why this design
 
-- **One ABI, two implementations.** Both libraries export the same `eki_*` functions from one
-  header. Which one runs is a link-time or load-time choice, never a source change in the caller.
-- **The header is generated, then enforced both ways.** cbindgen produces it from the Rust
-  declarations; the C++ library compiles against the committed copy, and CI regenerates it and fails
-  on any difference.
-- **A status enum out, plain integers in.** `eki_status` is a C enum the library writes. Selectors
-  the caller passes (`eki_aead_alg`, `eki_key_alg`, `eki_ks_backend`) are `int32_t` with `#define`
-  values, so an unknown value from C is rejected with a status instead of being undefined behaviour
-  in Rust.
-- **No exception or panic crosses the boundary.** Every exported function catches them and returns
-  `EKI_ERR_INTERNAL`; on every error all outputs are zero-filled.
-- **`unsafe` only in `ffi.rs`.** The rest of the Rust crate is `#![deny(unsafe_code)]`; every unsafe
-  block states its invariant in a SAFETY comment, and clippy enforces that it has one.
-- **Nothing hand-rolled.** Every primitive comes from OpenSSL 3 (EVP) or RustCrypto.
-- **Standard wrapped-key format.** Wrapped keys are plain RFC 3394 AES key wrap (40 bytes), identical
-  to PKCS#11 `CKM_AES_KEY_WRAP`; algorithm, label and id travel out of band.
-- **One PKCS#11 object mapping.** Both libraries store keys in the token with the same attributes, so
-  each can use keys the other created.
+- **Migration is a link-time decision**: both libraries export the same 32 `eki_*` functions
+  from one header, so a caller switches by linking or `dlopen`ing the other library, not by
+  changing its source.
+- **Neither side can drift from the header**: cbindgen generates it from the Rust declarations,
+  the C++ library compiles against the committed copy, and CI regenerates it and fails on any
+  difference.
+- **The conformance suite is the safety net**: a harness loads both libraries into one process
+  and requires the same status and the same bytes on published vectors, a seeded differential run
+  and every row of the error matrix.
+- **`unsafe` is confined to one file**: the Rust crate is `#![deny(unsafe_code)]` except
+  `core-rs/src/ffi.rs`, where the CI clippy run requires a SAFETY comment on every block and
+  `scripts/unsafe-inventory.sh` lists them.
+- **No panic or exception crosses the boundary**: every exported function runs inside
+  `catch_unwind` or `try`/`catch (...)`, returns `EKI_ERR_INTERNAL` for what it catches and
+  zero-fills its outputs on every error.
+- **Nothing cryptographic is hand-rolled**: every primitive comes from OpenSSL 3 (EVP) or a pinned
+  RustCrypto crate, and PKCS#11 keys are generated and used inside the token with one object
+  mapping both libraries share.
 
 ## Three ways across the boundary
 
@@ -221,8 +264,8 @@ The same safe Rust functions leave the crate three ways.
 **cbindgen, the C ABI** ([`core-rs/src/ffi.rs`](core-rs/src/ffi.rs)). A hand-written `extern "C"`
 layer turns pointers into slices, catches panics and maps errors to `eki_status`; cbindgen only
 writes the header. It gives full control of the ABI: fixed layouts, caller-owned buffers written in
-place without copies, and one header the C++ library implements as well. Every pointer rule is the
-author's, held up by SAFETY comments, Miri, fuzzing and review. It fits a stable contract that any
+place without copies, and one header the C++ library implements as well. Every pointer rule has
+to be stated and upheld by hand, through SAFETY comments, Miri, fuzzing and review. It fits a stable contract that any
 language with a C FFI can load, which is what makes the two libraries interchangeable.
 
 **UniFFI** ([`bindings/uniffi/`](bindings/uniffi/)). Proc macros generate the C scaffolding from
@@ -241,11 +284,15 @@ runtimes, where a native library cannot be loaded at all.
 
 ## Documentation
 
-- [FFI contract](docs/ffi-contract.md): the normative description of every function, status and rule
+- [FFI contract](docs/ffi-contract.md): the normative description of every function, status and
+  rule, with the unsafe inventory
 - [Threat model](docs/threat-model.md)
-- [Migration plan](docs/migration-plan.md)
-- [Benchmarks](docs/benchmarks.md)
+- [Migration plan](docs/migration-plan.md): strangler order, cutover gates, rollback, reviewer
+  checklist
+- [Benchmarks](docs/benchmarks.md): workloads, method and results table
 - [Findings](docs/findings.md): fuzzing and bug log
+- [PKI note](docs/pki-note.md): a step-ca CA with its keys in a PKCS#11 token
+- [UniFFI bindings](bindings/uniffi/README.md) and [wasm bindings](bindings/wasm/README.md)
 - [Security policy](SECURITY.md)
 
 ## License

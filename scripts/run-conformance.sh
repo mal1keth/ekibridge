@@ -9,9 +9,9 @@
 #                                               when selected (source scripts/softhsm-init.sh first)
 #
 # Without --with-pkcs11 the EKI_PKCS11_* variables are cleared for the test run, so a selected
-# ks_pkcs11* module skips itself; with it they are required. --with-pkcs11 does not add ks_pkcs11
-# to the selection (CI passes it together with ci-modules.txt, which lists ks_pkcs11 once the
-# PKCS#11 stores are implemented; --all --with-pkcs11 runs everything).
+# ks_pkcs11* module skips itself; with it they are required. --with-pkcs11 does not add the
+# ks_pkcs11* modules to the selection: CI passes it together with ci-modules.txt, which lists
+# them, and --all --with-pkcs11 runs everything.
 #
 # Environment:
 #   EKI_PQ=1      build both libraries with the hybrid KEM (cargo feature pq, CMake EKI_WITH_PQ=ON)

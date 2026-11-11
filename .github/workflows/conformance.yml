@@ -45,15 +45,10 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@v2
       # The softhsm-init exports live only in this shell, so the harness runs in the same step.
-      # scripts/run-conformance.sh is added by the conformance harness package; until then the
-      # step only reports that it is missing.
+      # --with-pkcs11 lets the PKCS#11 modules of ci-modules.txt run against the SoftHSM2 token.
       - name: run conformance
         run: |
           # Not followed by shellcheck: the script's final exit only runs when it is executed directly.
           # shellcheck source=/dev/null
           source scripts/softhsm-init.sh
-          if [ -x scripts/run-conformance.sh ]; then
-            scripts/run-conformance.sh --with-pkcs11
-          else
-            echo "scripts/run-conformance.sh not present yet; nothing to run"
-          fi
+          scripts/run-conformance.sh --with-pkcs11
