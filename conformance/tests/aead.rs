@@ -1,5 +1,6 @@
 //! `eki_aead_seal` / `eki_aead_open` for AES-256-GCM and ChaCha20-Poly1305: RFC 8439, GCM spec
-//! and Wycheproof vectors, the §4.4 rows, cross-language round trips and a seeded differential.
+//! and Wycheproof vectors, the failure rows of docs/ffi-contract.md ("Per-function contract"),
+//! cross-language round trips and a seeded differential.
 
 mod common;
 
@@ -322,7 +323,7 @@ fn seal_error_matrix() {
                 r.zeroed(lib, &row, "ct_out", &ct);
             }
         }
-        // NULL beats an unknown selector (§4.4).
+        // NULL beats an unknown selector ("Validation order": step 1 before step 2).
         let (s, _, tag) = seal(lib, 99, k, n, d, In::from(&pt[..1]), true);
         if r.status(
             lib,

@@ -2,7 +2,8 @@
 //!
 //! Vectors: RFC 4231 §4.2–§4.8, the HMAC-SHA-256 lines. Test case 5 publishes only the first
 //! 16 bytes of the tag, so it is compared as a prefix and left out of the `verify` tests.
-//! Rows: plan §4.4 `hmac` and `hmac_verify`; validation order and zero-on-error from §4.2.
+//! Rows: `hmac` and `hmac_verify` of docs/ffi-contract.md ("Per-function contract"); validation
+//! order and zero-on-error ("Validation order", "Outputs on error").
 
 mod common;
 
@@ -155,7 +156,7 @@ fn verify_wrong_message_is_auth_failed() {
     );
 }
 
-// --- §4.4 rows: hmac ----------------------------------------------------------------------
+// --- Rows: hmac ---------------------------------------------------------------------------
 
 #[test]
 fn key_len_zero_is_invalid_and_zeroes_out() {
@@ -210,14 +211,15 @@ fn null_pointers() {
 
 #[test]
 fn null_pointer_comes_before_length_checks() {
-    // `key_len 0` alone is INVALID_ARGUMENT, but a NULL `out` is detected first (§4.2 step 1).
+    // `key_len 0` alone is INVALID_ARGUMENT, but a NULL `out` is detected first (step 1 of
+    // "Validation order").
     assert_eq!(
         hmac(In::Null(0), In::Bytes(b"m"), None),
         EKI_ERR_NULL_POINTER
     );
 }
 
-// --- §4.4 rows: hmac_verify ---------------------------------------------------------------
+// --- Rows: hmac_verify --------------------------------------------------------------------
 
 #[test]
 fn verify_tag_len_not_32_is_invalid() {

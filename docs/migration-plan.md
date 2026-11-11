@@ -199,8 +199,8 @@ It does not show:
 - behaviour on hardware HSMs: every PKCS#11 run is against SoftHSM2;
 - foreign token objects: they are covered by each library's own unit tests, not by the harness;
 - the differences the contract leaves open (listed in
-  [Known differences](ffi-contract.md#known-differences)), such as audit paths that are not
-  regular files;
+  [Known differences](ffi-contract.md#known-differences)), such as the undo of an operation
+  after a panic inside a logged call;
 - concurrency beyond what the unit tests exercise, behaviour under memory pressure, or resistance
   to timing and other side channels;
 - that secrets are wiped: memory contents after a call are not inspected;

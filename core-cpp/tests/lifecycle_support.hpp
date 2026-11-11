@@ -1,8 +1,9 @@
 // Helpers and scenarios shared by the ABI version 2 tests (ffi_lifecycle_test.cpp,
 // ffi_audit_test.cpp, ffi_lifecycle_pkcs11_test.cpp): opening handles with eki_ks_open_v2, keys in
 // each lifecycle state, approvers in a separate software store, temporary log files, and the
-// rows of ABI 2 contract sections 3, 4, 6 and 7 that hold for every backend. Each scenario takes
-// the version 1 configuration of the backend under test.
+// rows of docs/ffi-contract.md ("Key states", "Opening a store with ABI 2", "Dual control",
+// "Per-function contract") that hold for every backend. Each scenario takes the version 1
+// configuration of the backend under test.
 
 #pragma once
 
@@ -114,7 +115,7 @@ inline testing::AssertionResult open_v2_succeeds(const eki_ks_config_v2& config)
   return testing::AssertionSuccess();
 }
 
-// The 68-byte message an approver signs (ABI 2 contract section 6).
+// The 68-byte message an approver signs ("Dual control" in docs/ffi-contract.md).
 inline std::vector<std::uint8_t> approval_message(const Request& request, const eki_key_id& id) {
   constexpr std::string_view domain = "ekibridge-destroy-v1";
   std::vector<std::uint8_t> message(domain.begin(), domain.end());
@@ -372,7 +373,7 @@ inline bool zero(std::span<const std::uint8_t> buf) {
 // The rows are long tables; their complexity is the macros, not branching logic.
 // NOLINTBEGIN(readability-function-cognitive-complexity)
 
-// ABI 2 contract section 3, the state table: every operation on a key in each state.
+// The state table ("Key states" in docs/ffi-contract.md): every operation on a key in each state.
 inline void state_table(const eki_ks_config& base) {
   for (const eki_key_state state : kStates) {
     SCOPED_TRACE(state_name(state));
@@ -470,8 +471,8 @@ inline void state_table(const eki_ks_config& base) {
   }
 }
 
-// ABI 2 contract section 3: the state check comes after the existence and type checks of the same
-// key and before every later check.
+// The state check comes after the existence and type checks of the same key and before every
+// later check ("Key states" in docs/ffi-contract.md).
 inline void check_order(const eki_ks_config& base) {
   Handle h(base);
   ASSERT_TRUE(h.open(widen(base)));
@@ -636,8 +637,8 @@ inline void info_v2_rows(const eki_ks_config& base) {
   EXPECT_TRUE(all_zero(raw)) << "the whole struct, padding included";
 }
 
-// ABI 2 contract section 6: dual control on a handle with approvers, and the two functions on a
-// handle without them.
+// Dual control on a handle with approvers, and the two functions on a handle without them ("Dual
+// control" in docs/ffi-contract.md).
 inline void dual_control(const eki_ks_config& base) {
   const Approvers approvers(3);
   const Approvers outsider(1);
@@ -664,8 +665,8 @@ inline void dual_control(const eki_ks_config& base) {
   EKI_EXPECT_STATUS(eki_ks_destroy_request(ks, &key, first.data()), EKI_OK);
   EXPECT_FALSE(untouched(first));
 
-  // destroy_approve: key format before the request lookup (amendment 9), then the request, then
-  // the approver, then the signature.
+  // destroy_approve: key format before the request lookup, then the request, then the approver,
+  // then the signature.
   const Signature sig0 = approvers.sign(0, first, key);
   std::uint32_t remaining = kFillU32;
   const PublicKey bad_key = off_curve_key();
@@ -711,7 +712,7 @@ inline void dual_control(const eki_ks_config& base) {
       EKI_OK);
   EXPECT_EQ(remaining, 1U);
 
-  // A new request replaces the old one and drops its approvals (amendment 7).
+  // A new request replaces the old one and drops its approvals.
   Request second = prefilled<EKI_DESTROY_REQUEST_LEN>();
   EKI_EXPECT_STATUS(eki_ks_destroy_request(ks, &key, second.data()), EKI_OK);
   EXPECT_NE(first, second);
@@ -770,8 +771,8 @@ inline void dual_control(const eki_ks_config& base) {
                     EKI_ERR_KEY_NOT_FOUND);
 }
 
-// Amendment 8: without approvers, destroy_request and destroy_approve are UNSUPPORTED before any
-// other check; destroy works as in ABI 1.
+// Without approvers, destroy_request and destroy_approve are UNSUPPORTED before any other check
+// ("Validation order", step 2); destroy works as in ABI 1.
 inline void no_approvers(const eki_ks_config& base) {
   const Approvers approvers(2);
   Handle h(base);
@@ -796,8 +797,8 @@ inline void no_approvers(const eki_ks_config& base) {
   EKI_EXPECT_STATUS(eki_ks_destroy(ks, &key), EKI_OK);
 }
 
-// ABI 2 contract section 4 and amendments 1 and 2: the configuration rows that hold for every
-// backend.
+// The configuration rows of "Opening a store with ABI 2" (docs/ffi-contract.md) that hold for
+// every backend.
 inline void open_v2_rows(const eki_ks_config& base) {
   const Approvers approvers(EKI_APPROVERS_MAX + 1);
   const TempDir dir;

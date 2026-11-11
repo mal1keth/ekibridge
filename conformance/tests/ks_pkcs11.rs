@@ -2,10 +2,10 @@
 //!
 //! Needs `EKI_PKCS11_MODULE`, `EKI_PKCS11_TOKEN_LABEL` and `EKI_PKCS11_PIN`
 //! (`source scripts/softhsm-init.sh`); every test skips with a message otherwise. The two
-//! libraries never hold a PKCS#11 store open at the same time (plan §4.3: the second
-//! `C_Finalize` owner problem): a static mutex serialises the tests, the runner also passes
-//! `--test-threads=1`, and every scenario closes one library's store before opening the
-//! other's. Every store is closed before the test returns.
+//! libraries never hold a PKCS#11 store open at the same time (docs/ffi-contract.md, "Thread
+//! safety": the second `C_Finalize` owner problem): a static mutex serialises the tests, the
+//! runner also passes `--test-threads=1`, and every scenario closes one library's store before
+//! opening the other's. Every store is closed before the test returns.
 
 mod common;
 
@@ -251,7 +251,8 @@ fn ecdsa_cross_language() {
     });
 }
 
-/// Labels need not be unique (plan §2): two keys with one label are separate objects.
+/// Labels need not be unique (docs/ffi-contract.md, "Labels"): two keys with one label are
+/// separate objects.
 #[test]
 fn duplicate_labels_are_allowed() {
     let Some((a, b, cfg, _guard)) = setup("ks_pkcs11::duplicate_labels_are_allowed") else {

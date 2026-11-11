@@ -7,11 +7,12 @@
 //! failure, so SoftHSM2 never sees open sessions at exit. Keys a test creates are destroyed by
 //! the `Store` guard, so the token is left as it was found.
 //!
-//! Rows: plan §4.4 `ks_open` (PKCS#11) and every store row; §4.3 object mapping and lifecycle.
+//! Rows: `ks_open` (PKCS#11) and every store row of docs/ffi-contract.md ("Per-function
+//! contract"), and its "PKCS#11 object mapping and lifecycle".
 //!
 //! The open-failure tests run with no handle open: while any handle of this process is logged
-//! in, `C_Login` answers `CKR_USER_ALREADY_LOGGED_IN`, which §4.3 maps to "proceed", so a wrong
-//! PIN would go unnoticed.
+//! in, `C_Login` answers `CKR_USER_ALREADY_LOGGED_IN`, which counts as success, so a wrong PIN
+//! would go unnoticed.
 
 mod common;
 
@@ -168,8 +169,8 @@ mod with_pkcs11 {
 
     #[test]
     fn open_null_field_before_format_of_another_field() {
-        // §4.2 `ks_open` lists the NULL checks of all three fields before the format checks:
-        // a malformed token label together with a NULL PIN is NULL_POINTER.
+        // `ks_open` makes the NULL checks of all three fields before the format checks
+        // ("Validation order"): a malformed token label together with a NULL PIN is NULL_POINTER.
         with_token(|token| {
             let empty = label("");
             let cfg = config(EKI_KS_PKCS11, Some(&token.module), Some(&empty), None);
@@ -276,7 +277,7 @@ mod with_pkcs11 {
 
     #[test]
     fn empty_message_hmac_and_sign_are_ok() {
-        // §4.3: SoftHSM2 rejects a NULL data pointer even with length 0; the library must
+        // SoftHSM2 rejects a NULL data pointer even with length 0; the library must
         // substitute a dummy pointer, so both NULL and non-NULL empty messages work.
         with_store(|store| {
             let mac = store.generate(EKI_KEY_HMAC_SHA256, "eki-test hmac");
@@ -318,7 +319,7 @@ mod with_pkcs11 {
 
     #[test]
     fn second_handle_survives_closing_the_first() {
-        // §4.3 lifecycle: close never logs out and finalizes only at zero open handles.
+        // Close never logs out and finalizes only at zero open handles.
         with_token(|token| {
             let b = Store::open(&token.config());
             let mac = {
@@ -358,7 +359,7 @@ mod with_pkcs11 {
         });
     }
 
-    // --- Module and session lifetime (§4.3 lifecycle) -----------------------------------------
+    // --- Module and session lifetime ----------------------------------------------------------
 
     #[test]
     fn two_open_handles_see_each_others_changes() {
@@ -416,7 +417,7 @@ mod with_pkcs11 {
 
     #[test]
     fn open_with_wrong_pin_while_logged_in_succeeds() {
-        // §4.3: the login state belongs to the process; while a handle is logged in, C_Login
+        // The login state belongs to the process; while a handle is logged in, C_Login
         // answers CKR_USER_ALREADY_LOGGED_IN whatever the PIN, which counts as success.
         with_token(|token| {
             let _logged_in = Store::open(&token.config());
@@ -469,7 +470,7 @@ mod with_pkcs11 {
         });
     }
 
-    // --- Objects the library did not create (§4.3, amended) -----------------------------------
+    // --- Objects the library did not create ("Foreign objects") -------------------------------
 
     /// A cryptoki session of its own on the test token, for objects the library did not create.
     /// It is opened while `store` is open, so the module is already initialised (this context
@@ -540,7 +541,7 @@ mod with_pkcs11 {
     }
 
     /// A token secret key of `key_type` with the value `value`, labelled `text`, carrying the
-    /// usage attributes of its row in the §4.3 table.
+    /// usage attributes of its row in the state table.
     fn secret_key(id: &eki_key_id, key_type: KeyType, text: &[u8], value: &[u8]) -> Vec<Attribute> {
         let mut template = vec![
             Attribute::Class(ObjectClass::SECRET_KEY),
@@ -623,8 +624,8 @@ mod with_pkcs11 {
 
     #[test]
     fn wrap_checks_existence_before_describing_a_foreign_kek() {
-        // §4.2 `ks_wrap`: kek exists → key exists → kek is AES_256. A foreign kek is a backend
-        // failure only once both ids are known to exist.
+        // `ks_wrap` ("Per-function contract"): kek exists → key exists → kek is AES_256. A foreign
+        // kek is a backend failure only once both ids are known to exist.
         with_token_store(|token, store| {
             let foreign = random_id();
             {
@@ -719,7 +720,8 @@ mod with_pkcs11 {
 
     #[test]
     fn secret_keys_created_elsewhere_are_usable() {
-        // Keys of the plan's shape made by another program: recognised with their algorithm and
+        // Keys of the shape of the mapping table made by another program: recognised with their
+        // algorithm and
         // label, and the token's CKM_SHA256_HMAC and CKM_AES_KEY_WRAP agree with the library's
         // own HMAC and RFC 3394 code over the same key bytes.
         with_token_store(|token, store| {

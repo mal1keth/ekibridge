@@ -286,8 +286,9 @@ and `approver_count` 0; both share one body in each library. The checks, in orde
 5. The backend is opened: any failure → BACKEND.
 6. The audit log is opened (created with mode 0600 if missing) and locked: an existing log that
    fails [verification](#verification) → AUTH_FAILED, and the file is left byte for byte
-   unchanged; a log that cannot be opened, created, locked or read → BACKEND. A second handle on a
-   log that is open, in the same process or another, fails here with BACKEND.
+   unchanged; a log that cannot be opened, created, locked or read, or is not a regular file →
+   BACKEND. A second handle on a log that is open, in the same process or another, fails here with
+   BACKEND.
 7. The `open` record is written: failure → BACKEND.
 
 On any failure nothing stays open and `*out` is NULL. There is no handle yet, so the reason of a
@@ -310,7 +311,7 @@ fresh random id; it starts ACTIVE and the old key becomes RETIRED.
 | Function | Inputs | Outputs | Failures in order |
 |---|---|---|---|
 | `eki_ks_audit_head` | `ks` | `hash_out[32]`, `*seq_out` | handle without a log → UNSUPPORTED. Not logged. |
-| `eki_audit_verify` | `path`, `expected_head[32]` or NULL | `*records_out` | `path` empty or without a NUL within 4097 bytes → INVALID_ARGUMENT; the file cannot be opened or read (a directory included) → BACKEND; any deviation from the format or the chain, or a last hash other than `expected_head` → AUTH_FAILED |
+| `eki_audit_verify` | `path`, `expected_head[32]` or NULL | `*records_out` | `path` empty or without a NUL within 4097 bytes → INVALID_ARGUMENT; the file cannot be opened or read, or is not a regular file → BACKEND; any deviation from the format or the chain, or a last hash other than `expected_head` → AUTH_FAILED |
 
 `eki_ks_audit_head` writes the hash and `seq` of the last record the handle's log holds. Kept
 outside the log, the hash lets `eki_audit_verify` detect a log whose tail was cut off, which the
@@ -514,8 +515,16 @@ chain: the first new record has the next `seq` and the last hash as `prev`.
 
 - The file is opened for appending, created with mode 0600 when missing, verified, and locked
   with `flock(LOCK_EX | LOCK_NB)` for the life of the handle.
+- The path must name a regular file; a symbolic link is followed. A directory, a device, a FIFO
+  or a socket is `EKI_ERR_BACKEND`, for the open call and for `eki_audit_verify` alike, and
+  nothing is read from it or written to it. The type is that of the open file (`fstat`), checked
+  before the first read (in the open call, after the lock). A FIFO does not make either call wait
+  for a writer, except in the race described under [Known differences](#known-differences).
 - Each record is written with a single `write` and flushed to stable storage before the call
-  returns (`fsync` in the C++ library, `sync_data` in the Rust library).
+  returns: with `fcntl(F_FULLFSYNC)` on Apple platforms, where `fsync` leaves the data in the
+  drive's cache, and with `fsync` elsewhere (`File::sync_data` in the Rust library, which is
+  `F_FULLFSYNC` on Apple platforms and `fdatasync` on Linux). The C++ library falls back to
+  `fsync` when a file system rejects `F_FULLFSYNC`.
 - If a record cannot be written in full, the call returns `EKI_ERR_BACKEND` even if the operation
   succeeded, the file is truncated back to its previous length, and what the operation did is
   undone where that is possible: a key it created (generate, unwrap, rotate) is destroyed again and
@@ -531,6 +540,7 @@ chain: the first new record has the next `seq` and the last hash as `prev`.
 
 `eki_audit_verify` and the open check accept a file only if:
 
+- it is a regular file (anything else is `EKI_ERR_BACKEND`, not `EKI_ERR_AUTH_FAILED`);
 - every line is a record of exactly the grammar above, at most 512 bytes with its `\n`;
 - the `seq` values are 1, 2, 3, ... in order;
 - each `prev` is the previous record's `hash` (64 zeros for the first) and each `hash` is the
@@ -645,7 +655,7 @@ with an exception for that one module, and the clippy run of CI (`-D warnings -W
 clippy::undocumented_unsafe_blocks`) fails for a block without a `// SAFETY:` comment. The tables below are the output of
 [`scripts/unsafe-inventory.sh`](../scripts/unsafe-inventory.sh), with its headings demoted one
 level; the script exits non-zero if a block or impl lacks its comment. Line numbers refer to
-`core-rs/src/ffi.rs` at the time of generation, entries after line 1777 are in its
+`core-rs/src/ffi.rs` at the time of generation, entries after line 1778 are in its
 `#[cfg(test)]` module, and the tables are wider than the rest of this document because they are
 generated. Regenerate with:
 
@@ -657,54 +667,53 @@ The `unsafe extern "C"` functions have no `# Safety` section because cbindgen wo
 the header; their contract is this document and the module documentation of `ffi.rs`.
 
 <!-- unsafe-inventory:begin -->
-
 ### Unsafe functions (43)
 
 | Line | Function | `# Safety` doc section |
 |---:|---|---|
-| 207 | `new` | yes |
-| 218 | `fixed` | yes |
-| 234 | `optional_fixed` | yes |
-| 290 | `new` | yes |
-| 301 | `fixed` | yes |
-| 489 | `new` | yes |
-| 540 | `new` | yes |
-| 610 | `new` | yes |
-| 673 | `new` | yes |
-| 723 | `new` | yes |
-| 776 | `new` | yes |
-| 876 | `eki_abi_version` | no |
-| 883 | `eki_version` | no |
-| 890 | `eki_status_name` | no |
-| 901 | `eki_hmac_sha256` | no |
-| 929 | `eki_hmac_sha256_verify` | no |
-| 958 | `eki_hkdf_sha256` | no |
-| 991 | `eki_aead_seal` | no |
-| 1038 | `eki_aead_open` | no |
-| 1085 | `eki_ecdsa_p256_verify` | no |
-| 1110 | `eki_ks_open` | no |
-| 1138 | `eki_ks_close` | no |
-| 1158 | `eki_ks_last_error_message` | no |
-| 1190 | `eki_ks_generate` | no |
-| 1217 | `eki_ks_get_info` | no |
-| 1243 | `eki_ks_get_public_key` | no |
-| 1271 | `eki_ks_sign` | no |
-| 1301 | `eki_ks_hmac_sha256` | no |
-| 1332 | `eki_ks_wrap` | no |
-| 1362 | `eki_ks_unwrap` | no |
-| 1400 | `eki_ks_destroy` | no |
-| 1415 | `eki_hybrid_kem_keygen` | no |
-| 1442 | `eki_hybrid_kem_encap` | no |
-| 1477 | `eki_hybrid_kem_decap` | no |
-| 1525 | `eki_ks_open_v2` | no |
-| 1543 | `eki_ks_get_info_v2` | no |
-| 1571 | `eki_ks_rotate` | no |
-| 1598 | `eki_ks_revoke` | no |
-| 1614 | `eki_ks_hmac_sha256_verify` | no |
-| 1647 | `eki_ks_destroy_request` | no |
-| 1679 | `eki_ks_destroy_approve` | no |
-| 1717 | `eki_ks_audit_head` | no |
-| 1749 | `eki_audit_verify` | no |
+| 208 | `new` | yes |
+| 219 | `fixed` | yes |
+| 235 | `optional_fixed` | yes |
+| 291 | `new` | yes |
+| 302 | `fixed` | yes |
+| 490 | `new` | yes |
+| 541 | `new` | yes |
+| 611 | `new` | yes |
+| 674 | `new` | yes |
+| 724 | `new` | yes |
+| 777 | `new` | yes |
+| 877 | `eki_abi_version` | no |
+| 884 | `eki_version` | no |
+| 891 | `eki_status_name` | no |
+| 902 | `eki_hmac_sha256` | no |
+| 930 | `eki_hmac_sha256_verify` | no |
+| 959 | `eki_hkdf_sha256` | no |
+| 992 | `eki_aead_seal` | no |
+| 1039 | `eki_aead_open` | no |
+| 1086 | `eki_ecdsa_p256_verify` | no |
+| 1111 | `eki_ks_open` | no |
+| 1139 | `eki_ks_close` | no |
+| 1159 | `eki_ks_last_error_message` | no |
+| 1191 | `eki_ks_generate` | no |
+| 1218 | `eki_ks_get_info` | no |
+| 1244 | `eki_ks_get_public_key` | no |
+| 1272 | `eki_ks_sign` | no |
+| 1302 | `eki_ks_hmac_sha256` | no |
+| 1333 | `eki_ks_wrap` | no |
+| 1363 | `eki_ks_unwrap` | no |
+| 1401 | `eki_ks_destroy` | no |
+| 1416 | `eki_hybrid_kem_keygen` | no |
+| 1443 | `eki_hybrid_kem_encap` | no |
+| 1478 | `eki_hybrid_kem_decap` | no |
+| 1526 | `eki_ks_open_v2` | no |
+| 1544 | `eki_ks_get_info_v2` | no |
+| 1572 | `eki_ks_rotate` | no |
+| 1599 | `eki_ks_revoke` | no |
+| 1615 | `eki_ks_hmac_sha256_verify` | no |
+| 1648 | `eki_ks_destroy_request` | no |
+| 1680 | `eki_ks_destroy_approve` | no |
+| 1718 | `eki_ks_audit_head` | no |
+| 1750 | `eki_audit_verify` | no |
 
 The file allows `clippy::missing_safety_doc`: the shared caller contract is stated once, in the module documentation and in `docs/ffi-contract.md`.
 
@@ -712,108 +721,107 @@ The file allows `clippy::missing_safety_doc`: the shared caller contract is stat
 
 | Line | Enclosing function | SAFETY comment |
 |---:|---|---|
-| 222 | `fixed` | SAFETY: with `len == max == N`, the precondition of `Input::new` is exactly this function's precondition, which the caller of `fixed` guarantees. |
-| 240 | `optional_fixed` | SAFETY: with `len == 0` (NULL) the precondition of `Input::new` requires nothing of the pointer; with `len == max == N` it is exactly this function's precondition, which the caller of `optional_fixed` guarantees. |
-| 261 | `bytes` | SAFETY: `ptr` is non-NULL (`non_null` above) and `0 < len <= max` (checked above), so the precondition of `Input::new`, which the extern function establishes from C1 and C2, makes `ptr` valid for reads of `len` bytes of one allocation (hence `len <= isize::MAX`) with no concurrent writer. `u8` has alignment 1. The slice borrows `self`, which lives no longer than the extern call, so it ends before C2 does. By C3 no output slice of the same call overlaps it. |
-| 305 | `fixed` | SAFETY: with `len == max == N`, the precondition of `Output::new` is exactly this function's precondition, which the caller of `fixed` guarantees. |
-| 327 | `bytes` | SAFETY: `ptr` is non-NULL (`non_null` above) and `0 < len <= max` (checked above), so the precondition of `Output::new` or `Output::fixed`, which the extern function establishes from C1 and C2, makes `ptr` valid for writes of `len` bytes of one allocation (hence `len <= isize::MAX`) that nothing else accesses. `u8` has alignment 1. The slice borrows `self` mutably, so no second slice over the buffer can exist while it lives, and by C3 no other parameter's slice overlaps it. |
-| 354 | `zero` | SAFETY: `ptr` is non-NULL and `0 < len <= max` (checked above), so by the precondition of `Output::new` or `Output::fixed` (from C1 and C2) it is valid for writes of `len` bytes. `zero` takes `&mut self`, so no slice returned by `bytes` is still live: the write aliases nothing in use. |
-| 507 | `get` | SAFETY: `ptr` is non-NULL (checked above), so by the precondition of `HandleIn::new` (from C5) it is the pointer `eki_ks_open` made with `Box::into_raw` from a `Box<Handle>` (cast to `eki_ks`), which is non-dangling and aligned for `Handle`, and the box has not been freed. `eki_ks_close` is the only code that frees it or creates a unique reference to it, and by C5 it does not run during this call. Every other access is through a shared reference like this one, and `Handle`'s mutable state is behind its mutex, so shared references from several threads at once are sound (`Handle` is `Sync`). The reference borrows `self`, a local of the extern call, so it ends before the call returns. |
-| 551 | `read` | SAFETY: `ptr` is non-NULL (`non_null` above), so by the precondition of `StructIn::new` (from C4, C1 and C2) it is aligned and valid for reads of one initialised `T` with no concurrent writer. The read is a typed copy of a `Copy` value: struct padding is not read as bytes. |
-| 620 | `write` | SAFETY: `ptr` is non-NULL (`non_null` above), so by the precondition of `StructOut::new` (from C4, C1 and C2) it is aligned and valid for writes of one `T` that nothing else accesses. `T: Copy`, so overwriting the old bytes drops nothing. |
-| 651 | `zero` | SAFETY: `ptr` is non-NULL (checked above), so by the precondition of `StructOut::new` (from C4, C1 and C2) it is aligned and valid for writes of one `T` that nothing else accesses; `write_bytes` with a count of 1 writes exactly `size_of::<T>()` bytes. The bytes are written, never read, and `T: ZeroFill` makes the all-zero result a valid `T`. |
-| 692 | `bytes` | SAFETY: `start` is non-NULL (`non_null` above). Bytes `0..len` were read and none is NUL, and `len < SCAN`, so by the precondition of `TextIn::new` (from C6) byte `len` is readable and in the same allocation: the string's NUL is at `len` or later, or the buffer has `SCAN` readable bytes. Nothing writes it (C2), and `u8` has alignment 1. |
-| 701 | `bytes` | SAFETY: each of the `len <= SCAN` bytes from `start` was read in the loop above, so they are readable and in one allocation (C6), with no concurrent writer (C2); `start` is non-NULL and `u8` has alignment 1. The slice borrows `self`, a local of the extern call, so it ends before the call returns. |
-| 735 | `bytes` | SAFETY: `ptr` is non-NULL (`non_null` above), so by the precondition of `PathIn::new` (from C7) it points to a NUL-terminated string in one allocation with no concurrent writer (C2), which is what `CStr::from_ptr` requires; `c_char` has alignment 1. The returned slice borrows `self`, a local of the extern call, so it ends before the call returns. |
-| 795 | `bytes` | SAFETY: `ptr` is non-NULL (`non_null` above, as the count is not 0) and the count is 2 to `EKI_APPROVERS_MAX` (`approver_count` above), so by the precondition of `ApproverKeysIn::new` (from C4, C1 and C2) it is valid for reads of `len` bytes of one allocation with no concurrent writer. `u8` has alignment 1. The slice borrows `self`, a local of the extern call, so it ends before the call returns. |
-| 825 | `open_handle` | SAFETY: the caller guarantees C4 for `approver_public_keys` and `approver_count` (C1 for `approver_count * 65` bytes when the count is 2 to 8, nothing for another count), the precondition of `ApproverKeysIn::new`; `eki_ks_open` passes NULL and 0, which require nothing. The values are the caller's own, copied out of its configuration. The wrapper is a local of this call, so it does not outlive that guarantee. |
-| 838 | `open_handle` | SAFETY: the configuration selects the PKCS#11 backend and the library has it (`select` answered `Pkcs11`), so the caller guarantees C7 for the module path and C6 (33 and 256 bytes) for the token label and the PIN, the preconditions of `PathIn::new` and `TextIn::new`. The pointers are the caller's own, copied out of its configuration. The wrappers are locals of this call, so they do not outlive that guarantee. |
-| 858 | `open_handle` | SAFETY: the caller guarantees C6 (4097 bytes) for a non-NULL `audit_log_path`, the precondition of `TextIn::new`; `eki_ks_open` passes NULL. The pointer is the caller's own, copied out of its configuration. The wrapper is a local of this call, so it does not outlive that guarantee. |
-| 911 | `eki_hmac_sha256` | SAFETY: the C caller guarantees C1 to C3 for `key`/`key_len`, `msg`/`msg_len` (no maximum) and the 32-byte `out`, which are the preconditions of `Input::new` and `Output::fixed`. The wrappers are locals of this call, so they do not outlive that guarantee. |
-| 942 | `eki_hmac_sha256_verify` | SAFETY: the C caller guarantees C1 and C2 for `key`/`key_len`, `msg`/`msg_len` and `tag`/`tag_len`, which are the preconditions of `Input::new`. None of the three lengths has a documented maximum (a `tag_len` other than 32 is a format error found by the safe module, not a cap), so C1 holds for any length passed. The wrappers are locals of this call, so they do not outlive that guarantee. |
-| 974 | `eki_hkdf_sha256` | SAFETY: the C caller guarantees C1 to C3 for `ikm`/`ikm_len`, `salt`/`salt_len` and `info`/`info_len` (each with the maximum `EKI_HKDF_MAX_INPUT_LEN`) and for `okm`/`okm_len` (maximum `EKI_HKDF_MAX_OKM_LEN`), which are the preconditions of `Input::new` and `Output::new`. C1 holds only for a length within its maximum; above it the preconditions require nothing of the pointer, and `bytes` refuses the length before creating a slice. The wrappers are locals of this call, so they do not outlive that guarantee. |
-| 1011 | `eki_aead_seal` | SAFETY: the C caller guarantees C1 to C3 for `key`/`key_len`, `nonce`/`nonce_len` and `aad`/`aad_len` (no maximum), for `pt`/`pt_len` and `ct_out`, which is sized by `pt_len` (each with the maximum `aead::MAX_LEN`), and for the 16-byte `tag_out`, which are the preconditions of `Input::new`, `Output::new` and `Output::fixed`. C1 holds for `pt` and `ct_out` only for a length within the maximum; above it the preconditions require nothing of either pointer, and `bytes` refuses the length before creating a slice. The wrappers are locals of this call, so they do not outlive that guarantee. |
-| 1058 | `eki_aead_open` | SAFETY: the C caller guarantees C1 to C3 for `key`/`key_len`, `nonce`/`nonce_len` and `aad`/`aad_len` (no maximum), for `ct`/`ct_len` and `pt_out`, which is sized by `ct_len` (each with the maximum `aead::MAX_LEN`), and for the 16-byte `tag`, which are the preconditions of `Input::new`, `Input::fixed` and `Output::new`. C1 holds for `ct` and `pt_out` only for a length within the maximum; above it the preconditions require nothing of either pointer, and `bytes` refuses the length before creating a slice. The wrappers are locals of this call, so they do not outlive that guarantee. |
-| 1094 | `eki_ecdsa_p256_verify` | SAFETY: the C caller guarantees C1 and C2 for the 65-byte `public_key`, for `msg`/`msg_len` (no maximum) and for the 64-byte `sig`, which are the preconditions of `Input::fixed` and `Input::new`. The wrappers are locals of this call, so they do not outlive that guarantee. |
-| 1118 | `eki_ks_open` | SAFETY: the C caller guarantees C4 (with C1 and C2) for `config`, one `eki_ks_config`, and for `out`, one `eki_ks *`, which are the preconditions of `StructIn::new` and `StructOut::new`. The wrappers are locals of this call, so they do not outlive that guarantee. |
-| 1146 | `eki_ks_close` | SAFETY: by C5 a non-NULL `ks` is the pointer `eki_ks_open` made with `Box::into_raw` from a `Box<Handle>`, not yet closed, and no other call on it runs now or later. Taking the box back is therefore the single release of that allocation, with the type it was made with, and no reference to the handle outlives it. |
-| 1169 | `eki_ks_last_error_message` | SAFETY: the C caller guarantees C5 for `ks` and C1 to C3 for `buf`/`buf_len` (no maximum), which are the preconditions of `HandleIn::new` and `Output::new`; a NULL `buf` comes with length 0, which requires nothing of the pointer. The wrappers are locals of this call, so they do not outlive that guarantee. |
-| 1200 | `eki_ks_generate` | SAFETY: the C caller guarantees C5 for `ks`, C6 for `label` and C4 for `id_out`, one `eki_key_id`, which are the preconditions of `HandleIn::new`, `LabelIn::new` and `StructOut::new`. The wrappers are locals of this call, so they do not outlive that guarantee. |
-| 1226 | `eki_ks_get_info` | SAFETY: the C caller guarantees C5 for `ks` and C4 for `id`, one `eki_key_id`, and for `info_out`, one `eki_key_info`, which are the preconditions of `HandleIn::new`, `StructIn::new` and `StructOut::new`. The wrappers are locals of this call, so they do not outlive that guarantee. |
-| 1252 | `eki_ks_get_public_key` | SAFETY: the C caller guarantees C5 for `ks`, C4 for `id` and C1 to C3 for the 65-byte `out`, which are the preconditions of `HandleIn::new`, `StructIn::new` and `Output::fixed`. The wrappers are locals of this call, so they do not outlive that guarantee. |
-| 1282 | `eki_ks_sign` | SAFETY: the C caller guarantees C5 for `ks`, C4 for `id`, and C1 to C3 for `msg`/`msg_len` (no maximum) and the 64-byte `sig_out`, which are the preconditions of `HandleIn::new`, `StructIn::new`, `Input::new` and `Output::fixed`. The wrappers are locals of this call, so they do not outlive that guarantee. |
-| 1312 | `eki_ks_hmac_sha256` | SAFETY: the C caller guarantees C5 for `ks`, C4 for `id`, and C1 to C3 for `msg`/`msg_len` (no maximum) and the 32-byte `out`, which are the preconditions of `HandleIn::new`, `StructIn::new`, `Input::new` and `Output::fixed`. The wrappers are locals of this call, so they do not outlive that guarantee. |
-| 1342 | `eki_ks_wrap` | SAFETY: the C caller guarantees C5 for `ks`, C4 for `kek_id` and `key_id`, and C1 to C3 for the 40-byte `out`, which are the preconditions of `HandleIn::new`, `StructIn::new` and `Output::fixed`. The wrappers are locals of this call, so they do not outlive that guarantee. |
-| 1376 | `eki_ks_unwrap` | SAFETY: the C caller guarantees C5 for `ks`, C4 for `kek_id` and `id`, C1 and C2 for `blob`/`blob_len` (no maximum: a length other than 40 is a format error found by the store logic, not a cap) and C6 for `label`, which are the preconditions of `HandleIn::new`, `StructIn::new`, `Input::new` and `LabelIn::new`. The wrappers are locals of this call, so they do not outlive that guarantee. |
-| 1404 | `eki_ks_destroy` | SAFETY: the C caller guarantees C5 for `ks` and C4 for `id`, which are the preconditions of `HandleIn::new` and `StructIn::new`. The wrappers are locals of this call, so they do not outlive that guarantee. |
-| 1419 | `eki_hybrid_kem_keygen` | SAFETY: the C caller guarantees C1 and C2 for the `EKI_HYBRID_PK_LEN`-byte `pk_out` and the `EKI_HYBRID_SK_LEN`-byte `sk_out`, which are the preconditions of `Output::fixed`. The wrappers are locals of this call, so they do not outlive that guarantee. |
-| 1451 | `eki_hybrid_kem_encap` | SAFETY: the C caller guarantees C1 and C2 for the `EKI_HYBRID_PK_LEN`-byte `pk`, the `EKI_HYBRID_CT_LEN`-byte `ct_out` and the `EKI_HYBRID_SS_LEN`-byte `ss_out`, which are the preconditions of `Input::fixed` and `Output::fixed`. The wrappers are locals of this call, so they do not outlive that guarantee. |
-| 1486 | `eki_hybrid_kem_decap` | SAFETY: the C caller guarantees C1 and C2 for the `EKI_HYBRID_SK_LEN`-byte `sk`, the `EKI_HYBRID_CT_LEN`-byte `ct` and the `EKI_HYBRID_SS_LEN`-byte `ss_out`, which are the preconditions of `Input::fixed` and `Output::fixed`. The wrappers are locals of this call, so they do not outlive that guarantee. |
-| 1533 | `eki_ks_open_v2` | SAFETY: the C caller guarantees C4 (with C1 and C2) for `config`, one `eki_ks_config_v2`, and for `out`, one `eki_ks *`, which are the preconditions of `StructIn::new` and `StructOut::new`. The wrappers are locals of this call, so they do not outlive that guarantee. |
-| 1552 | `eki_ks_get_info_v2` | SAFETY: the C caller guarantees C5 for `ks` and C4 for `id`, one `eki_key_id`, and for `info_out`, one `eki_key_info_v2`, which are the preconditions of `HandleIn::new`, `StructIn::new` and `StructOut::new`. The wrappers are locals of this call, so they do not outlive that guarantee. |
-| 1580 | `eki_ks_rotate` | SAFETY: the C caller guarantees C5 for `ks` and C4 for `old_id` and `new_id_out`, one `eki_key_id` each, which are the preconditions of `HandleIn::new`, `StructIn::new` and `StructOut::new`. The wrappers are locals of this call, so they do not outlive that guarantee. |
-| 1602 | `eki_ks_revoke` | SAFETY: the C caller guarantees C5 for `ks` and C4 for `id`, which are the preconditions of `HandleIn::new` and `StructIn::new`. The wrappers are locals of this call, so they do not outlive that guarantee. |
-| 1627 | `eki_ks_hmac_sha256_verify` | SAFETY: the C caller guarantees C5 for `ks`, C4 for `id`, and C1 and C2 for `msg`/`msg_len` and `tag`/`tag_len`, which are the preconditions of `HandleIn::new`, `StructIn::new` and `Input::new`. Neither length has a documented maximum (a `tag_len` other than 32 is a format error, not a cap), so C1 holds for any length passed. The wrappers are locals of this call, so they do not outlive that guarantee. |
-| 1656 | `eki_ks_destroy_request` | SAFETY: the C caller guarantees C5 for `ks`, C4 for `id` and C1 to C3 for the 32-byte `request_out`, which are the preconditions of `HandleIn::new`, `StructIn::new` and `Output::fixed`. The wrappers are locals of this call, so they do not outlive that guarantee. |
-| 1691 | `eki_ks_destroy_approve` | SAFETY: the C caller guarantees C5 for `ks`, C1 and C2 for the 32-byte `request`, the 65-byte `approver_public_key` and the 64-byte `sig`, and C4 for `remaining_out`, one `uint32_t`, which are the preconditions of `HandleIn::new`, `Input::fixed` and `StructOut::new`. The wrappers are locals of this call, so they do not outlive that guarantee. |
-| 1726 | `eki_ks_audit_head` | SAFETY: the C caller guarantees C5 for `ks`, C1 to C3 for the 32-byte `hash_out` and C4 for `seq_out`, one `uint64_t`, which are the preconditions of `HandleIn::new`, `Output::fixed` and `StructOut::new`. The wrappers are locals of this call, so they do not outlive that guarantee. |
-| 1758 | `eki_audit_verify` | SAFETY: the C caller guarantees C6 (4097 bytes) for `path`, C1 and C2 for the 32-byte `expected_head`, which may be NULL, and C4 for `records_out`, one `uint64_t`, which are the preconditions of `TextIn::new`, `Input::optional_fixed` and `StructOut::new`. The wrappers are locals of this call, so they do not outlive that guarantee. |
-| 1787 | `null_with_length_zero_is_an_empty_input` | SAFETY: the length is 0, so `Input::new` requires nothing of the pointer. |
-| 1796 | `dangling_with_length_zero_is_an_empty_input` | SAFETY: the length is 0, so `Input::new` requires nothing of the pointer. |
-| 1803 | `null_with_non_zero_length_is_null_pointer` | SAFETY: the pointer is NULL, which the preconditions allow; it is never dereferenced. |
-| 1819 | `fixed_input_is_never_empty_and_is_rejected_when_null` | SAFETY: `buf` is a live local array of 4 bytes that nothing writes while `input` exists. |
-| 1824 | `fixed_input_is_never_empty_and_is_rejected_when_null` | SAFETY: the pointer is NULL, which the preconditions allow; it is never dereferenced. |
-| 1832 | `null_with_length_zero_is_an_empty_output` | SAFETY: the length is 0, so `Output::new` requires nothing of the pointer. |
-| 1841 | `null_check_precedes_the_maximum` | SAFETY: the pointer is NULL and the length above the maximum; neither is used. |
-| 1851 | `input_above_its_maximum_is_invalid_without_a_slice` | SAFETY: the length exceeds the maximum, so nothing is required of the pointer. The 1-byte buffer is smaller than the declared length; under Miri a slice over it would be reported. |
-| 1862 | `ok_leaves_outputs_as_written` | SAFETY: both pointers come from live local arrays of the lengths passed, which are not otherwise accessed until `barrier` returns. |
-| 1883 | `error_status_zeroes_outputs` | SAFETY: as in `ok_leaves_outputs_as_written`. |
-| 1904 | `null_pointer_in_another_parameter_zeroes_outputs` | SAFETY: the input is NULL and never dereferenced; `out` is a live local array of 4 bytes, not otherwise accessed until `barrier` returns. |
-| 1921 | `null_output_is_skipped_on_error` | SAFETY: the pointer is NULL; `Output::zero` must skip it rather than write through it. |
-| 1934 | `panic_becomes_internal_and_zeroes_outputs` | SAFETY: as in `ok_leaves_outputs_as_written`. |
-| 1971 | `output_above_its_maximum_is_left_untouched` | SAFETY: `fixed` is a live local array of 4 bytes. The variable-length output declares 1000 bytes against a maximum of 100, so nothing is required of its pointer: the buffer behind it has only 4 bytes, and under Miri any slice or write over 1000 bytes would be reported. |
-| 2000 | `message` | SAFETY: `ks` is an open handle and `buf` a live local of the length passed. |
-| 2007 | `null_handle_is_null_pointer` | SAFETY: the pointer is NULL, which the precondition allows; it is never dereferenced. |
-| 2019 | `handle_pointer_reaches_the_handle` | SAFETY: `raw` came from `Box::into_raw` of a `Box<Handle>` and is closed only after this block, in which `ks` lives. |
-| 2033 | `handle_pointer_reaches_the_handle` | SAFETY: `raw` is an open handle and nothing else uses it. |
-| 2040 | `struct_input_is_read_by_copy` | SAFETY: `id` is a live, aligned, initialised local that nothing writes meanwhile. |
-| 2045 | `struct_input_is_read_by_copy` | SAFETY: the pointer is NULL, which the precondition allows; it is never dereferenced. |
-| 2063 | `struct_output_is_zero_filled_over_its_whole_size` | SAFETY: `storage` is a live local aligned for `eki_key_info` (assertion above) and of its size, not otherwise accessed until `barrier` returns. |
-| 2083 | `struct_output_is_written_on_success` | SAFETY: `id` is a live local, not otherwise accessed until `barrier` returns. |
-| 2094 | `null_struct_output_is_skipped_on_error` | SAFETY: the pointer is NULL; `zero` must skip it rather than write through it. |
-| 2106 | `failed_handle_output_is_null` | SAFETY: `handle` is a live local, not otherwise accessed until `barrier` returns. |
-| 2115 | `handle_put_into_null_output_is_dropped` | SAFETY: the pointer is NULL, which the precondition allows; it is never written. |
-| 2126 | `null_label_is_null_pointer` | SAFETY: the pointer is NULL, which the precondition allows; it is never dereferenced. |
-| 2139 | `label_ends_at_its_first_nul` | SAFETY: `text` is a live NUL-terminated byte string that nothing writes. |
-| 2150 | `label_of_64_bytes_and_its_nul_is_read_whole` | SAFETY: `text` is a live 65-byte allocation ending in NUL that nothing writes. |
-| 2160 | `unterminated_label_scan_stops_at_65_bytes` | SAFETY: `text` is a live allocation of 65 readable bytes that nothing writes. |
-| 2169 | `null_optional_text_is_none` | SAFETY: the pointer is NULL, which the precondition allows; it is never dereferenced. |
-| 2173 | `null_optional_text_is_none` | SAFETY: `text` is a live NUL-terminated string that nothing writes. |
-| 2183 | `no_approver_keys_read_nothing` | SAFETY: the count is 0, for which the precondition requires nothing of the pointer. |
-| 2187 | `no_approver_keys_read_nothing` | SAFETY: the count is outside 2 to 8, for which the precondition requires nothing. |
-| 2190 | `no_approver_keys_read_nothing` | SAFETY: as above; the pointer is NULL and never dereferenced. |
-| 2194 | `no_approver_keys_read_nothing` | SAFETY: the pointer is NULL with a count of 0, which the precondition allows. |
-| 2207 | `approver_keys_cover_exactly_count_keys` | SAFETY: `keys` is a live allocation of `count * 65` bytes that nothing writes. |
-| 2228 | `backend_failure_message_reaches_the_caller_and_is_reset` | SAFETY: `ks` is an open handle; `text` is NUL-terminated; `id` is a live local. |
-| 2234 | `backend_failure_message_reaches_the_caller_and_is_reset` | SAFETY: `ks` is an open handle; the NULL id is the case under test. |
-| 2238 | `backend_failure_message_reaches_the_caller_and_is_reset` | SAFETY: `ks` is an open handle and nothing else uses it. |
-| 2254 | `panic_in_a_store_operation_is_internal_and_the_handle_recovers` | SAFETY: `ks` is an open handle; `id` and `sig` are live locals; the message is empty. |
-| 2260 | `panic_in_a_store_operation_is_internal_and_the_handle_recovers` | SAFETY: `ks` is an open handle, its lock now poisoned; `id` is a live local; `storage` is aligned for and of the size of `eki_key_info`. |
-| 2264 | `panic_in_a_store_operation_is_internal_and_the_handle_recovers` | SAFETY: `ks` is an open handle and nothing else uses it. |
+| 223 | `fixed` | SAFETY: with `len == max == N`, the precondition of `Input::new` is exactly this function's precondition, which the caller of `fixed` guarantees. |
+| 241 | `optional_fixed` | SAFETY: with `len == 0` (NULL) the precondition of `Input::new` requires nothing of the pointer; with `len == max == N` it is exactly this function's precondition, which the caller of `optional_fixed` guarantees. |
+| 262 | `bytes` | SAFETY: `ptr` is non-NULL (`non_null` above) and `0 < len <= max` (checked above), so the precondition of `Input::new`, which the extern function establishes from C1 and C2, makes `ptr` valid for reads of `len` bytes of one allocation (hence `len <= isize::MAX`) with no concurrent writer. `u8` has alignment 1. The slice borrows `self`, which lives no longer than the extern call, so it ends before C2 does. By C3 no output slice of the same call overlaps it. |
+| 306 | `fixed` | SAFETY: with `len == max == N`, the precondition of `Output::new` is exactly this function's precondition, which the caller of `fixed` guarantees. |
+| 328 | `bytes` | SAFETY: `ptr` is non-NULL (`non_null` above) and `0 < len <= max` (checked above), so the precondition of `Output::new` or `Output::fixed`, which the extern function establishes from C1 and C2, makes `ptr` valid for writes of `len` bytes of one allocation (hence `len <= isize::MAX`) that nothing else accesses. `u8` has alignment 1. The slice borrows `self` mutably, so no second slice over the buffer can exist while it lives, and by C3 no other parameter's slice overlaps it. |
+| 355 | `zero` | SAFETY: `ptr` is non-NULL and `0 < len <= max` (checked above), so by the precondition of `Output::new` or `Output::fixed` (from C1 and C2) it is valid for writes of `len` bytes. `zero` takes `&mut self`, so no slice returned by `bytes` is still live: the write aliases nothing in use. |
+| 508 | `get` | SAFETY: `ptr` is non-NULL (checked above), so by the precondition of `HandleIn::new` (from C5) it is the pointer `eki_ks_open` made with `Box::into_raw` from a `Box<Handle>` (cast to `eki_ks`), which is non-dangling and aligned for `Handle`, and the box has not been freed. `eki_ks_close` is the only code that frees it or creates a unique reference to it, and by C5 it does not run during this call. Every other access is through a shared reference like this one, and `Handle`'s mutable state is behind its mutex, so shared references from several threads at once are sound (`Handle` is `Sync`). The reference borrows `self`, a local of the extern call, so it ends before the call returns. |
+| 552 | `read` | SAFETY: `ptr` is non-NULL (`non_null` above), so by the precondition of `StructIn::new` (from C4, C1 and C2) it is aligned and valid for reads of one initialised `T` with no concurrent writer. The read is a typed copy of a `Copy` value: struct padding is not read as bytes. |
+| 621 | `write` | SAFETY: `ptr` is non-NULL (`non_null` above), so by the precondition of `StructOut::new` (from C4, C1 and C2) it is aligned and valid for writes of one `T` that nothing else accesses. `T: Copy`, so overwriting the old bytes drops nothing. |
+| 652 | `zero` | SAFETY: `ptr` is non-NULL (checked above), so by the precondition of `StructOut::new` (from C4, C1 and C2) it is aligned and valid for writes of one `T` that nothing else accesses; `write_bytes` with a count of 1 writes exactly `size_of::<T>()` bytes. The bytes are written, never read, and `T: ZeroFill` makes the all-zero result a valid `T`. |
+| 693 | `bytes` | SAFETY: `start` is non-NULL (`non_null` above). Bytes `0..len` were read and none is NUL, and `len < SCAN`, so by the precondition of `TextIn::new` (from C6) byte `len` is readable and in the same allocation: the string's NUL is at `len` or later, or the buffer has `SCAN` readable bytes. Nothing writes it (C2), and `u8` has alignment 1. |
+| 702 | `bytes` | SAFETY: each of the `len <= SCAN` bytes from `start` was read in the loop above, so they are readable and in one allocation (C6), with no concurrent writer (C2); `start` is non-NULL and `u8` has alignment 1. The slice borrows `self`, a local of the extern call, so it ends before the call returns. |
+| 736 | `bytes` | SAFETY: `ptr` is non-NULL (`non_null` above), so by the precondition of `PathIn::new` (from C7) it points to a NUL-terminated string in one allocation with no concurrent writer (C2), which is what `CStr::from_ptr` requires; `c_char` has alignment 1. The returned slice borrows `self`, a local of the extern call, so it ends before the call returns. |
+| 796 | `bytes` | SAFETY: `ptr` is non-NULL (`non_null` above, as the count is not 0) and the count is 2 to `EKI_APPROVERS_MAX` (`approver_count` above), so by the precondition of `ApproverKeysIn::new` (from C4, C1 and C2) it is valid for reads of `len` bytes of one allocation with no concurrent writer. `u8` has alignment 1. The slice borrows `self`, a local of the extern call, so it ends before the call returns. |
+| 826 | `open_handle` | SAFETY: the caller guarantees C4 for `approver_public_keys` and `approver_count` (C1 for `approver_count * 65` bytes when the count is 2 to 8, nothing for another count), the precondition of `ApproverKeysIn::new`; `eki_ks_open` passes NULL and 0, which require nothing. The values are the caller's own, copied out of its configuration. The wrapper is a local of this call, so it does not outlive that guarantee. |
+| 839 | `open_handle` | SAFETY: the configuration selects the PKCS#11 backend and the library has it (`select` answered `Pkcs11`), so the caller guarantees C7 for the module path and C6 (33 and 256 bytes) for the token label and the PIN, the preconditions of `PathIn::new` and `TextIn::new`. The pointers are the caller's own, copied out of its configuration. The wrappers are locals of this call, so they do not outlive that guarantee. |
+| 859 | `open_handle` | SAFETY: the caller guarantees C6 (4097 bytes) for a non-NULL `audit_log_path`, the precondition of `TextIn::new`; `eki_ks_open` passes NULL. The pointer is the caller's own, copied out of its configuration. The wrapper is a local of this call, so it does not outlive that guarantee. |
+| 912 | `eki_hmac_sha256` | SAFETY: the C caller guarantees C1 to C3 for `key`/`key_len`, `msg`/`msg_len` (no maximum) and the 32-byte `out`, which are the preconditions of `Input::new` and `Output::fixed`. The wrappers are locals of this call, so they do not outlive that guarantee. |
+| 943 | `eki_hmac_sha256_verify` | SAFETY: the C caller guarantees C1 and C2 for `key`/`key_len`, `msg`/`msg_len` and `tag`/`tag_len`, which are the preconditions of `Input::new`. None of the three lengths has a documented maximum (a `tag_len` other than 32 is a format error found by the safe module, not a cap), so C1 holds for any length passed. The wrappers are locals of this call, so they do not outlive that guarantee. |
+| 975 | `eki_hkdf_sha256` | SAFETY: the C caller guarantees C1 to C3 for `ikm`/`ikm_len`, `salt`/`salt_len` and `info`/`info_len` (each with the maximum `EKI_HKDF_MAX_INPUT_LEN`) and for `okm`/`okm_len` (maximum `EKI_HKDF_MAX_OKM_LEN`), which are the preconditions of `Input::new` and `Output::new`. C1 holds only for a length within its maximum; above it the preconditions require nothing of the pointer, and `bytes` refuses the length before creating a slice. The wrappers are locals of this call, so they do not outlive that guarantee. |
+| 1012 | `eki_aead_seal` | SAFETY: the C caller guarantees C1 to C3 for `key`/`key_len`, `nonce`/`nonce_len` and `aad`/`aad_len` (no maximum), for `pt`/`pt_len` and `ct_out`, which is sized by `pt_len` (each with the maximum `aead::MAX_LEN`), and for the 16-byte `tag_out`, which are the preconditions of `Input::new`, `Output::new` and `Output::fixed`. C1 holds for `pt` and `ct_out` only for a length within the maximum; above it the preconditions require nothing of either pointer, and `bytes` refuses the length before creating a slice. The wrappers are locals of this call, so they do not outlive that guarantee. |
+| 1059 | `eki_aead_open` | SAFETY: the C caller guarantees C1 to C3 for `key`/`key_len`, `nonce`/`nonce_len` and `aad`/`aad_len` (no maximum), for `ct`/`ct_len` and `pt_out`, which is sized by `ct_len` (each with the maximum `aead::MAX_LEN`), and for the 16-byte `tag`, which are the preconditions of `Input::new`, `Input::fixed` and `Output::new`. C1 holds for `ct` and `pt_out` only for a length within the maximum; above it the preconditions require nothing of either pointer, and `bytes` refuses the length before creating a slice. The wrappers are locals of this call, so they do not outlive that guarantee. |
+| 1095 | `eki_ecdsa_p256_verify` | SAFETY: the C caller guarantees C1 and C2 for the 65-byte `public_key`, for `msg`/`msg_len` (no maximum) and for the 64-byte `sig`, which are the preconditions of `Input::fixed` and `Input::new`. The wrappers are locals of this call, so they do not outlive that guarantee. |
+| 1119 | `eki_ks_open` | SAFETY: the C caller guarantees C4 (with C1 and C2) for `config`, one `eki_ks_config`, and for `out`, one `eki_ks *`, which are the preconditions of `StructIn::new` and `StructOut::new`. The wrappers are locals of this call, so they do not outlive that guarantee. |
+| 1147 | `eki_ks_close` | SAFETY: by C5 a non-NULL `ks` is the pointer `eki_ks_open` made with `Box::into_raw` from a `Box<Handle>`, not yet closed, and no other call on it runs now or later. Taking the box back is therefore the single release of that allocation, with the type it was made with, and no reference to the handle outlives it. |
+| 1170 | `eki_ks_last_error_message` | SAFETY: the C caller guarantees C5 for `ks` and C1 to C3 for `buf`/`buf_len` (no maximum), which are the preconditions of `HandleIn::new` and `Output::new`; a NULL `buf` comes with length 0, which requires nothing of the pointer. The wrappers are locals of this call, so they do not outlive that guarantee. |
+| 1201 | `eki_ks_generate` | SAFETY: the C caller guarantees C5 for `ks`, C6 for `label` and C4 for `id_out`, one `eki_key_id`, which are the preconditions of `HandleIn::new`, `LabelIn::new` and `StructOut::new`. The wrappers are locals of this call, so they do not outlive that guarantee. |
+| 1227 | `eki_ks_get_info` | SAFETY: the C caller guarantees C5 for `ks` and C4 for `id`, one `eki_key_id`, and for `info_out`, one `eki_key_info`, which are the preconditions of `HandleIn::new`, `StructIn::new` and `StructOut::new`. The wrappers are locals of this call, so they do not outlive that guarantee. |
+| 1253 | `eki_ks_get_public_key` | SAFETY: the C caller guarantees C5 for `ks`, C4 for `id` and C1 to C3 for the 65-byte `out`, which are the preconditions of `HandleIn::new`, `StructIn::new` and `Output::fixed`. The wrappers are locals of this call, so they do not outlive that guarantee. |
+| 1283 | `eki_ks_sign` | SAFETY: the C caller guarantees C5 for `ks`, C4 for `id`, and C1 to C3 for `msg`/`msg_len` (no maximum) and the 64-byte `sig_out`, which are the preconditions of `HandleIn::new`, `StructIn::new`, `Input::new` and `Output::fixed`. The wrappers are locals of this call, so they do not outlive that guarantee. |
+| 1313 | `eki_ks_hmac_sha256` | SAFETY: the C caller guarantees C5 for `ks`, C4 for `id`, and C1 to C3 for `msg`/`msg_len` (no maximum) and the 32-byte `out`, which are the preconditions of `HandleIn::new`, `StructIn::new`, `Input::new` and `Output::fixed`. The wrappers are locals of this call, so they do not outlive that guarantee. |
+| 1343 | `eki_ks_wrap` | SAFETY: the C caller guarantees C5 for `ks`, C4 for `kek_id` and `key_id`, and C1 to C3 for the 40-byte `out`, which are the preconditions of `HandleIn::new`, `StructIn::new` and `Output::fixed`. The wrappers are locals of this call, so they do not outlive that guarantee. |
+| 1377 | `eki_ks_unwrap` | SAFETY: the C caller guarantees C5 for `ks`, C4 for `kek_id` and `id`, C1 and C2 for `blob`/`blob_len` (no maximum: a length other than 40 is a format error found by the store logic, not a cap) and C6 for `label`, which are the preconditions of `HandleIn::new`, `StructIn::new`, `Input::new` and `LabelIn::new`. The wrappers are locals of this call, so they do not outlive that guarantee. |
+| 1405 | `eki_ks_destroy` | SAFETY: the C caller guarantees C5 for `ks` and C4 for `id`, which are the preconditions of `HandleIn::new` and `StructIn::new`. The wrappers are locals of this call, so they do not outlive that guarantee. |
+| 1420 | `eki_hybrid_kem_keygen` | SAFETY: the C caller guarantees C1 and C2 for the `EKI_HYBRID_PK_LEN`-byte `pk_out` and the `EKI_HYBRID_SK_LEN`-byte `sk_out`, which are the preconditions of `Output::fixed`. The wrappers are locals of this call, so they do not outlive that guarantee. |
+| 1452 | `eki_hybrid_kem_encap` | SAFETY: the C caller guarantees C1 and C2 for the `EKI_HYBRID_PK_LEN`-byte `pk`, the `EKI_HYBRID_CT_LEN`-byte `ct_out` and the `EKI_HYBRID_SS_LEN`-byte `ss_out`, which are the preconditions of `Input::fixed` and `Output::fixed`. The wrappers are locals of this call, so they do not outlive that guarantee. |
+| 1487 | `eki_hybrid_kem_decap` | SAFETY: the C caller guarantees C1 and C2 for the `EKI_HYBRID_SK_LEN`-byte `sk`, the `EKI_HYBRID_CT_LEN`-byte `ct` and the `EKI_HYBRID_SS_LEN`-byte `ss_out`, which are the preconditions of `Input::fixed` and `Output::fixed`. The wrappers are locals of this call, so they do not outlive that guarantee. |
+| 1534 | `eki_ks_open_v2` | SAFETY: the C caller guarantees C4 (with C1 and C2) for `config`, one `eki_ks_config_v2`, and for `out`, one `eki_ks *`, which are the preconditions of `StructIn::new` and `StructOut::new`. The wrappers are locals of this call, so they do not outlive that guarantee. |
+| 1553 | `eki_ks_get_info_v2` | SAFETY: the C caller guarantees C5 for `ks` and C4 for `id`, one `eki_key_id`, and for `info_out`, one `eki_key_info_v2`, which are the preconditions of `HandleIn::new`, `StructIn::new` and `StructOut::new`. The wrappers are locals of this call, so they do not outlive that guarantee. |
+| 1581 | `eki_ks_rotate` | SAFETY: the C caller guarantees C5 for `ks` and C4 for `old_id` and `new_id_out`, one `eki_key_id` each, which are the preconditions of `HandleIn::new`, `StructIn::new` and `StructOut::new`. The wrappers are locals of this call, so they do not outlive that guarantee. |
+| 1603 | `eki_ks_revoke` | SAFETY: the C caller guarantees C5 for `ks` and C4 for `id`, which are the preconditions of `HandleIn::new` and `StructIn::new`. The wrappers are locals of this call, so they do not outlive that guarantee. |
+| 1628 | `eki_ks_hmac_sha256_verify` | SAFETY: the C caller guarantees C5 for `ks`, C4 for `id`, and C1 and C2 for `msg`/`msg_len` and `tag`/`tag_len`, which are the preconditions of `HandleIn::new`, `StructIn::new` and `Input::new`. Neither length has a documented maximum (a `tag_len` other than 32 is a format error, not a cap), so C1 holds for any length passed. The wrappers are locals of this call, so they do not outlive that guarantee. |
+| 1657 | `eki_ks_destroy_request` | SAFETY: the C caller guarantees C5 for `ks`, C4 for `id` and C1 to C3 for the 32-byte `request_out`, which are the preconditions of `HandleIn::new`, `StructIn::new` and `Output::fixed`. The wrappers are locals of this call, so they do not outlive that guarantee. |
+| 1692 | `eki_ks_destroy_approve` | SAFETY: the C caller guarantees C5 for `ks`, C1 and C2 for the 32-byte `request`, the 65-byte `approver_public_key` and the 64-byte `sig`, and C4 for `remaining_out`, one `uint32_t`, which are the preconditions of `HandleIn::new`, `Input::fixed` and `StructOut::new`. The wrappers are locals of this call, so they do not outlive that guarantee. |
+| 1727 | `eki_ks_audit_head` | SAFETY: the C caller guarantees C5 for `ks`, C1 to C3 for the 32-byte `hash_out` and C4 for `seq_out`, one `uint64_t`, which are the preconditions of `HandleIn::new`, `Output::fixed` and `StructOut::new`. The wrappers are locals of this call, so they do not outlive that guarantee. |
+| 1759 | `eki_audit_verify` | SAFETY: the C caller guarantees C6 (4097 bytes) for `path`, C1 and C2 for the 32-byte `expected_head`, which may be NULL, and C4 for `records_out`, one `uint64_t`, which are the preconditions of `TextIn::new`, `Input::optional_fixed` and `StructOut::new`. The wrappers are locals of this call, so they do not outlive that guarantee. |
+| 1788 | `null_with_length_zero_is_an_empty_input` | SAFETY: the length is 0, so `Input::new` requires nothing of the pointer. |
+| 1797 | `dangling_with_length_zero_is_an_empty_input` | SAFETY: the length is 0, so `Input::new` requires nothing of the pointer. |
+| 1804 | `null_with_non_zero_length_is_null_pointer` | SAFETY: the pointer is NULL, which the preconditions allow; it is never dereferenced. |
+| 1820 | `fixed_input_is_never_empty_and_is_rejected_when_null` | SAFETY: `buf` is a live local array of 4 bytes that nothing writes while `input` exists. |
+| 1825 | `fixed_input_is_never_empty_and_is_rejected_when_null` | SAFETY: the pointer is NULL, which the preconditions allow; it is never dereferenced. |
+| 1833 | `null_with_length_zero_is_an_empty_output` | SAFETY: the length is 0, so `Output::new` requires nothing of the pointer. |
+| 1842 | `null_check_precedes_the_maximum` | SAFETY: the pointer is NULL and the length above the maximum; neither is used. |
+| 1852 | `input_above_its_maximum_is_invalid_without_a_slice` | SAFETY: the length exceeds the maximum, so nothing is required of the pointer. The 1-byte buffer is smaller than the declared length; under Miri a slice over it would be reported. |
+| 1863 | `ok_leaves_outputs_as_written` | SAFETY: both pointers come from live local arrays of the lengths passed, which are not otherwise accessed until `barrier` returns. |
+| 1884 | `error_status_zeroes_outputs` | SAFETY: as in `ok_leaves_outputs_as_written`. |
+| 1905 | `null_pointer_in_another_parameter_zeroes_outputs` | SAFETY: the input is NULL and never dereferenced; `out` is a live local array of 4 bytes, not otherwise accessed until `barrier` returns. |
+| 1922 | `null_output_is_skipped_on_error` | SAFETY: the pointer is NULL; `Output::zero` must skip it rather than write through it. |
+| 1935 | `panic_becomes_internal_and_zeroes_outputs` | SAFETY: as in `ok_leaves_outputs_as_written`. |
+| 1972 | `output_above_its_maximum_is_left_untouched` | SAFETY: `fixed` is a live local array of 4 bytes. The variable-length output declares 1000 bytes against a maximum of 100, so nothing is required of its pointer: the buffer behind it has only 4 bytes, and under Miri any slice or write over 1000 bytes would be reported. |
+| 2001 | `message` | SAFETY: `ks` is an open handle and `buf` a live local of the length passed. |
+| 2008 | `null_handle_is_null_pointer` | SAFETY: the pointer is NULL, which the precondition allows; it is never dereferenced. |
+| 2020 | `handle_pointer_reaches_the_handle` | SAFETY: `raw` came from `Box::into_raw` of a `Box<Handle>` and is closed only after this block, in which `ks` lives. |
+| 2034 | `handle_pointer_reaches_the_handle` | SAFETY: `raw` is an open handle and nothing else uses it. |
+| 2041 | `struct_input_is_read_by_copy` | SAFETY: `id` is a live, aligned, initialised local that nothing writes meanwhile. |
+| 2046 | `struct_input_is_read_by_copy` | SAFETY: the pointer is NULL, which the precondition allows; it is never dereferenced. |
+| 2064 | `struct_output_is_zero_filled_over_its_whole_size` | SAFETY: `storage` is a live local aligned for `eki_key_info` (assertion above) and of its size, not otherwise accessed until `barrier` returns. |
+| 2084 | `struct_output_is_written_on_success` | SAFETY: `id` is a live local, not otherwise accessed until `barrier` returns. |
+| 2095 | `null_struct_output_is_skipped_on_error` | SAFETY: the pointer is NULL; `zero` must skip it rather than write through it. |
+| 2107 | `failed_handle_output_is_null` | SAFETY: `handle` is a live local, not otherwise accessed until `barrier` returns. |
+| 2116 | `handle_put_into_null_output_is_dropped` | SAFETY: the pointer is NULL, which the precondition allows; it is never written. |
+| 2127 | `null_label_is_null_pointer` | SAFETY: the pointer is NULL, which the precondition allows; it is never dereferenced. |
+| 2140 | `label_ends_at_its_first_nul` | SAFETY: `text` is a live NUL-terminated byte string that nothing writes. |
+| 2151 | `label_of_64_bytes_and_its_nul_is_read_whole` | SAFETY: `text` is a live 65-byte allocation ending in NUL that nothing writes. |
+| 2161 | `unterminated_label_scan_stops_at_65_bytes` | SAFETY: `text` is a live allocation of 65 readable bytes that nothing writes. |
+| 2170 | `null_optional_text_is_none` | SAFETY: the pointer is NULL, which the precondition allows; it is never dereferenced. |
+| 2174 | `null_optional_text_is_none` | SAFETY: `text` is a live NUL-terminated string that nothing writes. |
+| 2184 | `no_approver_keys_read_nothing` | SAFETY: the count is 0, for which the precondition requires nothing of the pointer. |
+| 2188 | `no_approver_keys_read_nothing` | SAFETY: the count is outside 2 to 8, for which the precondition requires nothing. |
+| 2191 | `no_approver_keys_read_nothing` | SAFETY: as above; the pointer is NULL and never dereferenced. |
+| 2195 | `no_approver_keys_read_nothing` | SAFETY: the pointer is NULL with a count of 0, which the precondition allows. |
+| 2208 | `approver_keys_cover_exactly_count_keys` | SAFETY: `keys` is a live allocation of `count * 65` bytes that nothing writes. |
+| 2229 | `backend_failure_message_reaches_the_caller_and_is_reset` | SAFETY: `ks` is an open handle; `text` is NUL-terminated; `id` is a live local. |
+| 2235 | `backend_failure_message_reaches_the_caller_and_is_reset` | SAFETY: `ks` is an open handle; the NULL id is the case under test. |
+| 2239 | `backend_failure_message_reaches_the_caller_and_is_reset` | SAFETY: `ks` is an open handle and nothing else uses it. |
+| 2255 | `panic_in_a_store_operation_is_internal_and_the_handle_recovers` | SAFETY: `ks` is an open handle; `id` and `sig` are live locals; the message is empty. |
+| 2261 | `panic_in_a_store_operation_is_internal_and_the_handle_recovers` | SAFETY: `ks` is an open handle, its lock now poisoned; `id` is a live local; `storage` is aligned for and of the size of `eki_key_info`. |
+| 2265 | `panic_in_a_store_operation_is_internal_and_the_handle_recovers` | SAFETY: `ks` is an open handle and nothing else uses it. |
 
 ### Unsafe impls (6)
 
 | Line | Impl | SAFETY comment |
 |---:|---|---|
-| 570 | `unsafe impl ZeroFill for eki_key_id` | SAFETY: `eki_key_id` is `#[repr(C)]` around `[u8; 16]`, and zero is a valid `u8`. |
-| 574 | `unsafe impl ZeroFill for eki_key_info` | SAFETY: `eki_key_info` is `#[repr(C)]` with an `i32` newtype and a `[c_char; 65]`, both valid at zero (the selector value 0, an empty label); its padding bytes have no validity requirement. |
-| 579 | `unsafe impl ZeroFill for eki_key_info_v2` | SAFETY: `eki_key_info_v2` is `#[repr(C)]` with two `i32` newtypes and a `[c_char; 65]`, all valid at zero (the selector value 0, the state value 0, an empty label); its padding bytes have no validity requirement. |
-| 582 | `unsafe impl ZeroFill for u32` | SAFETY: every bit pattern of a `u32` is a valid value, all zeros included. |
-| 585 | `unsafe impl ZeroFill for u64` | SAFETY: every bit pattern of a `u64` is a valid value, all zeros included. |
-| 590 | `unsafe impl ZeroFill for *mut eki_ks` | SAFETY: an all-zero raw pointer is the null pointer: `core::ptr::null_mut` is documented as equivalent to zero-initialising the pointer. That is the `*out == NULL` that `eki_ks_open` leaves on failure. |
+| 571 | `unsafe impl ZeroFill for eki_key_id` | SAFETY: `eki_key_id` is `#[repr(C)]` around `[u8; 16]`, and zero is a valid `u8`. |
+| 575 | `unsafe impl ZeroFill for eki_key_info` | SAFETY: `eki_key_info` is `#[repr(C)]` with an `i32` newtype and a `[c_char; 65]`, both valid at zero (the selector value 0, an empty label); its padding bytes have no validity requirement. |
+| 580 | `unsafe impl ZeroFill for eki_key_info_v2` | SAFETY: `eki_key_info_v2` is `#[repr(C)]` with two `i32` newtypes and a `[c_char; 65]`, all valid at zero (the selector value 0, the state value 0, an empty label); its padding bytes have no validity requirement. |
+| 583 | `unsafe impl ZeroFill for u32` | SAFETY: every bit pattern of a `u32` is a valid value, all zeros included. |
+| 586 | `unsafe impl ZeroFill for u64` | SAFETY: every bit pattern of a `u64` is a valid value, all zeros included. |
+| 591 | `unsafe impl ZeroFill for *mut eki_ks` | SAFETY: an all-zero raw pointer is the null pointer: `core::ptr::null_mut` is documented as equivalent to zero-initialising the pointer. That is the `*out == NULL` that `eki_ks_open` leaves on failure. |
 
 Every unsafe block and impl carries a `// SAFETY:` comment.
-
 <!-- unsafe-inventory:end -->
 
 ## Known limitations
@@ -840,7 +848,8 @@ Every unsafe block and impl carries a `// SAFETY:` comment.
 - PKCS#11: the one-way state transitions are enforced by the library, not by the token (see
   above).
 - The audit log records calls through one handle only. It is not signed; its integrity rests on
-  the chain plus a head kept elsewhere, and its durability on the file system honouring `fsync`.
+  the chain plus a head kept elsewhere, and its durability on the file system honouring the flush
+  (`F_FULLFSYNC` or `fsync`).
 - With the software backend, keys, their states and pending destroy requests last only as long
   as the handle; its audit log file outlives them.
 
@@ -851,8 +860,8 @@ pins:
 
 | Area | C++ (`libekicore`) | Rust (`libekicore_rs`) |
 |---|---|---|
-| Audit path that is not a regular file (`/dev/null`, a FIFO, a device) | refused with `EKI_ERR_BACKEND` by `eki_audit_verify` and the open call | opened as a file: `eki_audit_verify("/dev/null")` returns OK with 0 records; a FIFO can block the call |
-| Flushing an audit record | `fsync` | `sync_data`; neither uses `F_FULLFSYNC` on macOS |
+| Audit path replaced by a FIFO while `eki_audit_verify` runs | opened with `O_NONBLOCK`, then refused as not a regular file | the path is examined, then opened; a swap in between makes the open wait for a writer |
+| Flushing an audit record | `fcntl(F_FULLFSYNC)` on Apple platforms, with `fsync` as the fallback when a file system rejects it; `fsync` elsewhere | `sync_data`: `F_FULLFSYNC` on Apple platforms, with no fallback (a file system that rejects it makes the write fail with `EKI_ERR_BACKEND`); `fdatasync` on Linux |
 | Exception or panic inside a logged operation | logged with status 10 after the changes registered so far are undone | logged with status 10, then the panic continues to the barrier; no undo |
 | Loading the PKCS#11 module | `dlopen(RTLD_NOW \| RTLD_LOCAL)`, `C_GetFunctionList` only | `cryptoki` (`libloading`, lazy binding), `C_GetInterface` before `C_GetFunctionList` |
 | Ending an object search | the result of `C_FindObjectsFinal` is checked | ignored |

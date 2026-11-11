@@ -1,5 +1,6 @@
-//! `eki_hmac_sha256` and `eki_hmac_sha256_verify`: RFC 4231 vectors, the §4.4 rows, and a
-//! seeded differential comparison of the two libraries.
+//! `eki_hmac_sha256` and `eki_hmac_sha256_verify`: RFC 4231 vectors, the failure rows of
+//! docs/ffi-contract.md ("Per-function contract"), and a seeded differential comparison of the two
+//! libraries.
 
 mod common;
 
@@ -30,7 +31,7 @@ fn rfc4231_vectors() {
             }
             outs.push(out);
             if c.truncated {
-                continue; // only a prefix is published: no verify (plan §4.5)
+                continue; // only a prefix is published (RFC 4231 case 5): no verify
             }
             let s = lib.hmac_sha256_verify(In::from(&c.key), In::from(&c.data), In::from(&c.mac));
             r.status(lib, &format!("{} verify", c.name), s, EKI_OK);

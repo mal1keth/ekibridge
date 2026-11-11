@@ -5,12 +5,13 @@
 //! note and returns. Tests are serialised through one static lock and every store is closed
 //! before its test returns.
 //!
-//! Rows: the shared scenarios of `common::lifecycle` (plan-L12 sections 3, 4, 6, 7), and what
-//! only a token shows: the usage attributes that hold the state (section 3, second table), the
-//! token itself refusing what the state forbids (amendment 13: observable only below the ABI,
-//! through a session of this test), a state seen through a second handle, an attribute
-//! combination that is no state, and a key destroyed through another handle while a destroy
-//! request for it waits.
+//! Rows: the shared scenarios of `common::lifecycle` (docs/ffi-contract.md: "Key states",
+//! "Opening a store with ABI 2", "Dual control", "Per-function contract"), and what only a token
+//! shows: the usage attributes that hold the state ("PKCS#11 object mapping and lifecycle"), the
+//! token itself refusing what the state forbids (observable only below the ABI, through a
+//! session of this test, because the library refuses first), a state seen through a second
+//! handle, an attribute combination that is no state, and a key destroyed through another handle
+//! while a destroy request for it waits.
 
 mod common;
 

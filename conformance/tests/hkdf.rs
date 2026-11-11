@@ -1,4 +1,5 @@
-//! `eki_hkdf_sha256`: RFC 5869 vectors, the §4.4 rows, and a seeded differential comparison.
+//! `eki_hkdf_sha256`: RFC 5869 vectors, the failure rows of docs/ffi-contract.md ("Per-function
+//! contract"), and a seeded differential comparison.
 
 mod common;
 

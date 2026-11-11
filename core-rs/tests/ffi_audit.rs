@@ -1,9 +1,9 @@
 //! The audit log through the C ABI, on the software store: what `eki_ks_open_v2` does with a
 //! log, the record of every call, `eki_ks_audit_head` and `eki_audit_verify`.
 //!
-//! Rows: plan-L12 sections 4, 5 and 7 and amendments 2, 3, 5, 10, 11 and 12. Records are checked
-//! independently of the library: each line is split into its fields here and its hash is
-//! recomputed with `sha2`.
+//! Rows: "Opening a store with ABI 2", "Audit log" and "Audit functions" of docs/ffi-contract.md.
+//! Records are checked independently of the library: each line is split into its fields here and
+//! its hash is recomputed with `sha2`.
 
 mod common;
 
@@ -61,6 +61,38 @@ impl Drop for TempDir {
 
 fn c_path(path: &Path) -> CString {
     CString::new(path.as_os_str().as_bytes()).expect("path has no NUL")
+}
+
+#[cfg(target_vendor = "apple")]
+type Mode = u16;
+#[cfg(not(target_vendor = "apple"))]
+type Mode = u32;
+
+unsafe extern "C" {
+    /// `mkfifo(3)`: the standard library cannot create a FIFO, and a child process is not an
+    /// option because a process spawned while another test holds a log lock keeps that lock
+    /// until it executes its program.
+    fn mkfifo(path: *const core::ffi::c_char, mode: Mode) -> core::ffi::c_int;
+}
+
+/// Creates a FIFO at `path`.
+fn make_fifo(path: &Path) {
+    let text = c_path(path);
+    // SAFETY: `text` is a live NUL-terminated string that `mkfifo` only reads.
+    let made = unsafe { mkfifo(text.as_ptr(), 0o600) };
+    assert_eq!(made, 0, "mkfifo: {}", std::io::Error::last_os_error());
+}
+
+/// Runs `f` on another thread and waits up to ten seconds for its result, so that a call that
+/// waits for the writer of a FIFO fails the test instead of hanging it.
+fn within_ten_seconds<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(f());
+    });
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the call returned instead of waiting")
 }
 
 /// A software configuration with the audit log at `path` and no approvers.
@@ -472,6 +504,39 @@ fn a_log_that_cannot_be_created_is_a_backend_failure() {
     assert_open_v2_fails(&logged_config(&too_long), EKI_ERR_INVALID_ARGUMENT);
     let empty = CString::default();
     assert_open_v2_fails(&logged_config(&empty), EKI_ERR_INVALID_ARGUMENT);
+}
+
+#[test]
+fn a_log_must_be_a_regular_file() {
+    let dir = TempDir::new("special");
+    let fifo = dir.file("fifo");
+    make_fifo(&fifo);
+    for (row, path) in [
+        ("a directory", dir.0.clone()),
+        ("/dev/null", PathBuf::from("/dev/null")),
+        ("a FIFO", fifo),
+    ] {
+        let verified = {
+            let path = path.clone();
+            within_ten_seconds(move || verify(&path, None))
+        };
+        assert_eq!(verified, (EKI_ERR_BACKEND, 0), "{row}: eki_audit_verify");
+        let opened = within_ten_seconds(move || {
+            let path = c_path(&path);
+            let opened = try_open_v2(&logged_config(&path));
+            (opened.status, opened.out_is_null)
+        });
+        assert_eq!(opened, (EKI_ERR_BACKEND, true), "{row}: eki_ks_open_v2");
+    }
+    // A symbolic link is followed: what it leads to is a regular file.
+    let target = dir.file("target.log");
+    short_log(&target);
+    let link = dir.file("link.log");
+    std::os::unix::fs::symlink(&target, &link).expect("symlink");
+    let records = records(&target).len() as u64;
+    assert_eq!(verify(&link, None), (EKI_OK, records), "a symbolic link");
+    let store = Store::open_v2(&logged_config(&c_path(&link)));
+    assert_eq!(store.audit_head().1, records + 1, "a symbolic link, open");
 }
 
 #[test]

@@ -43,7 +43,7 @@ pub const PREFILL: u8 = 0xA5;
 // Statuses and selectors as raw integers
 // ---------------------------------------------------------------------------------------------
 
-/// Status values of plan §4.1 and the ABI 2 contract §2, written out independently of both
+/// Status values of docs/ffi-contract.md ("Status codes"), written out independently of both
 /// libraries.
 pub mod status {
     use ekicore_abi::eki_status;
@@ -82,7 +82,7 @@ pub mod status {
         (EKI_ERR_APPROVAL_REQUIRED, "EKI_ERR_APPROVAL_REQUIRED"),
     ];
 
-    // The values above are typed in from the plan; the shared ABI crate must agree with them.
+    // The values above are typed in from the contract; the shared ABI crate must agree with them.
     const _: () = {
         assert!(EKI_OK == eki_status::EKI_OK as i32);
         assert!(EKI_ERR_NULL_POINTER == eki_status::EKI_ERR_NULL_POINTER as i32);
@@ -322,7 +322,8 @@ impl KeyInfo {
         }
     }
 
-    /// True when both fields are zero-filled (the §4.2 rule for `info_out` on error).
+    /// True when both fields are zero-filled (the rule for `info_out` on error, see "Outputs on
+    /// error" in docs/ffi-contract.md).
     pub fn is_zero(&self) -> bool {
         self.alg == 0 && is_zero(&self.label)
     }

@@ -1,16 +1,17 @@
-// The PKCS#11 backend of the key store (plan 4.3): keys are token objects, reached through one
-// read-write session per handle on a module that pkcs11_module.cpp loads and initialises.
+// The PKCS#11 backend of the key store (docs/ffi-contract.md, "PKCS#11 object mapping and
+// lifecycle"): keys are token objects, reached through one read-write session per handle on a
+// module that pkcs11_module.cpp loads and initialises.
 //
-// Objects follow the plan's mapping table, so that both ekicore libraries can use keys the other
-// created in the same token. A key is the set of objects that carry its CKA_ID: one secret key
-// object (AES-256, HMAC-SHA256) or a private and a public key object (ECDSA P-256). Objects that
-// carry an id but form none of these shapes, or whose CKA_LABEL is not a valid label, were made by
-// another program; they still take the id (plan 4.3, amended).
+// Objects follow the mapping table of the contract, so that both ekicore libraries can use keys
+// the other created in the same token. A key is the set of objects that carry its CKA_ID: one
+// secret key object (AES-256, HMAC-SHA256) or a private and a public key object (ECDSA P-256).
+// Objects that carry an id but form none of these shapes, or whose CKA_LABEL is not a valid label,
+// were made by another program; they still take the id ("Foreign objects").
 //
-// The lifecycle state of a key is the set of its usage attributes (ABI 2 contract section 3): the
-// token itself refuses what the state forbids, and every library and process that uses the token
-// sees the same state. A combination of usage attributes that spells no state makes the objects
-// foreign like a broken shape.
+// The lifecycle state of a key is the set of its usage attributes ("State in usage attributes" in
+// the same section): the token itself refuses what the state forbids, and every library and
+// process that uses the token sees the same state. A combination of usage attributes that spells
+// no state makes the objects foreign like a broken shape.
 //
 // Every operation looks its objects up again by id: object handles are not kept between calls,
 // since another session or process may destroy or replace the objects in between.
@@ -82,7 +83,7 @@ CK_ATTRIBUTE attribute(CK_ATTRIBUTE_TYPE type, const Value& value) noexcept {
 
 // The data pointer for an input buffer. PKCS#11 declares input data as non-const although the
 // module never writes through it. SoftHSM2 answers CKR_ARGUMENTS_BAD for a NULL data pointer even
-// with length 0, so an empty input points at a dummy byte instead (plan 4.3, "empty data").
+// with length 0, so an empty input points at a dummy byte instead.
 CK_BYTE_PTR input(bytes data) noexcept {
   static constexpr CK_BYTE empty_input = 0;
   const CK_BYTE* pointer = data.empty() ? &empty_input : data.data();
@@ -94,7 +95,7 @@ CK_MECHANISM mechanism(CK_MECHANISM_TYPE type) noexcept {
   return CK_MECHANISM{.mechanism = type, .pParameter = nullptr, .ulParameterLen = 0};
 }
 
-// The usage and protection attributes of a secret key of alg, from the plan's table; generate and
+// The usage and protection attributes of a secret key of alg in the ACTIVE state; generate and
 // unwrap give a key the same ones.
 std::vector<CK_ATTRIBUTE> secret_key_usage(key_alg alg) {
   if (alg == key_alg::aes_256) {
@@ -129,8 +130,9 @@ std::vector<CK_ATTRIBUTE> secret_key_template(key_alg alg, const key_label& labe
   return attributes;
 }
 
-// One usage attribute of the state table (ABI 2 contract section 3): the object it sits on and its
-// value in each state, in the order ACTIVE, RETIRED, REVOKED.
+// One usage attribute of the state table ("PKCS#11 object mapping and lifecycle" in
+// docs/ffi-contract.md): the object it sits on and its value in each state, in the order ACTIVE,
+// RETIRED, REVOKED.
 struct usage_flag {
   // On the public key of a key pair; otherwise on the secret key or the private key.
   bool on_public_key;
@@ -178,7 +180,7 @@ std::size_t state_column(key_state state) noexcept {
 }
 
 // A read-write session, closed on destruction. Closing never logs out: login state belongs to the
-// whole application, and C_Logout would log out every other handle on the token (plan 4.3).
+// whole application, and C_Logout would log out every other handle on the token.
 class session {
 public:
   session() = default;
@@ -344,7 +346,7 @@ public:
     if (result.status != EKI_OK) {
       return result;
     }
-    // CKM_ECDSA signs a digest that the caller computes (plan 4.3, "sign").
+    // CKM_ECDSA signs a digest that the caller computes.
     std::array<CK_BYTE, EVP_MAX_MD_SIZE> digest{};
     unsigned int digest_len = 0;
     if (EVP_Digest(msg.data(), msg.size(), digest.data(), &digest_len, EVP_sha256(), nullptr) !=
@@ -410,9 +412,10 @@ public:
         functions()->C_UnwrapKey(session_.handle(), &key_wrap, wrapping.key, input(blob40),
                                  blob40.size(), attributes.data(), attributes.size(), &key);
     if (rv != CKR_OK) {
-      // Every failure here counts as a failed integrity check (plan 4.3, return-code mapping):
-      // SoftHSM2 reports a wrong RFC 3394 check value as CKR_GENERAL_ERROR, which cannot be told
-      // apart from other causes. Layer 2 has checked everything else by now.
+      // Every failure here counts as a failed integrity check ("Known limitations" in
+      // docs/ffi-contract.md): SoftHSM2 reports a wrong RFC 3394 check value as
+      // CKR_GENERAL_ERROR, which cannot be told apart from other causes. Layer 2 has checked
+      // everything else by now.
       outcome rejected = failure("C_UnwrapKey", rv);
       rejected.status = EKI_ERR_AUTH_FAILED;
       return rejected;
@@ -689,7 +692,7 @@ private:
 
   // The shapes the library creates: one secret key of type AES or GENERIC_SECRET, or one private
   // and one public key of type EC on P-256. alg stays empty for anything else. CKA_VALUE_LEN is
-  // never read (plan 4.3, "get_info").
+  // never read ("Known limitations" in docs/ffi-contract.md).
   outcome classify(located& objects, std::span<const object_kind> kinds,
                    std::optional<key_alg>& alg) {
     alg.reset();
@@ -898,7 +901,8 @@ outcome make_pkcs11_backend(pkcs11_config config, std::unique_ptr<backend>& out)
     rv = functions->C_Login(handle, CKU_USER, pin.data(), pin.size());
   }
   // Login state belongs to the application: while another handle is logged in to the token, the
-  // module answers CKR_USER_ALREADY_LOGGED_IN whatever the PIN (plan 4.3).
+  // module answers CKR_USER_ALREADY_LOGGED_IN whatever the PIN ("Known limitations" in
+  // docs/ffi-contract.md).
   if (rv != CKR_OK && rv != CKR_USER_ALREADY_LOGGED_IN) {
     return failure("C_Login", rv);
   }

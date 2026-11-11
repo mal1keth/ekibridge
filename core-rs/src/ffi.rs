@@ -87,8 +87,9 @@
 //! the handle's lock and resets the last-error message; `check_null` then covers the remaining
 //! pointer parameters in parameter order. The status is the one a single `check_null` over all
 //! parameters would give, and a call that fails on a NULL `id` or `label` still resets the
-//! message, as plan 4.2 ("Last error") requires of every store call. The body then calls the
-//! store logic (`keystore::Store`) with the lock held, and writes the outputs.
+//! message, as docs/ffi-contract.md ("Last error message") requires of every store call. The
+//! body then calls the store logic (`keystore::Store`) with the lock held, and writes the
+//! outputs.
 //! `eki_ks_last_error_message` and `eki_ks_close` return no status, so they use
 //! `contain_panic`, the panic barrier without the status mapping.
 //!
@@ -1160,7 +1161,7 @@ pub unsafe extern "C" fn eki_ks_last_error_message(
     buf: *mut c_char,
     buf_len: usize,
 ) -> usize {
-    // `buf == NULL` is treated as `buf_len == 0` (plan 4.2, "Last error").
+    // `buf == NULL` is treated as `buf_len == 0` (docs/ffi-contract.md, "Last error message").
     let buf_len = if buf.is_null() { 0 } else { buf_len };
     // SAFETY: the C caller guarantees C5 for `ks` and C1 to C3 for `buf`/`buf_len` (no maximum),
     // which are the preconditions of `HandleIn::new` and `Output::new`; a NULL `buf` comes with

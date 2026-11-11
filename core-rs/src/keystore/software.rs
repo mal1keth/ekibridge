@@ -1,4 +1,4 @@
-//! The software backend: keys in memory, for the lifetime of the handle (plan 4.3, "Software").
+//! The software backend: keys in memory, for the lifetime of the handle.
 //!
 //! A map from id to label, lifecycle state and key material. AES-256 and HMAC-SHA256 keys are 32 random bytes;
 //! an ECDSA P-256 key is a `p256` signing key. Every value is wiped when its key is destroyed and

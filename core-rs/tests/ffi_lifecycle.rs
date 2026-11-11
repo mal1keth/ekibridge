@@ -1,8 +1,9 @@
 //! Key lifecycle and dual control of destroy on the software store, through the C ABI.
 //!
-//! Rows: plan-L12 section 3 (state table), section 4 (`eki_ks_open_v2` field rows that need no
-//! audit log), section 6 (dual control) and the matching rows of section 7. The same scenarios
-//! run on the PKCS#11 store in `ffi_lifecycle_pkcs11.rs`.
+//! Rows of docs/ffi-contract.md: "Key states" (state table), "Opening a store with ABI 2"
+//! (`eki_ks_open_v2` field rows that need no audit log), "Dual control" and the matching rows of
+//! "Per-function contract". The same scenarios run on the PKCS#11 store in
+//! `ffi_lifecycle_pkcs11.rs`.
 
 mod common;
 

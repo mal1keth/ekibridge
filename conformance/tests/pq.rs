@@ -119,7 +119,7 @@ fn null_pointer_rows() {
     r.finish();
 }
 
-/// §4.4 "hybrid (feature off), valid pointers → UNSUPPORTED", outputs zero-filled.
+/// Hybrid KEM (feature off), valid pointers → UNSUPPORTED, outputs zero-filled.
 #[test]
 fn feature_off_is_unsupported() {
     if pq_enabled() {
@@ -211,7 +211,7 @@ fn cross_language_round_trips() {
     r.finish();
 }
 
-/// §4.4: an all-zero X25519 part of `pk` gives an all-zero X25519 secret → INVALID_ARGUMENT.
+/// An all-zero X25519 part of `pk` gives an all-zero X25519 secret → INVALID_ARGUMENT.
 #[test]
 fn encap_rejects_zero_x25519_key() {
     let Some((a, b)) = pq_setup("pq::encap_rejects_zero_x25519_key") else {

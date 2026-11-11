@@ -1,5 +1,5 @@
-//! Dual control of destroy (ABI 2 contract, section 6): the approver keys of a handle and its
-//! pending destroy requests.
+//! Dual control of destroy (docs/ffi-contract.md, "Dual control"): the approver keys of a handle
+//! and its pending destroy requests.
 //!
 //! The data lives in the handle, behind its lock, and vanishes when the handle closes. Approver
 //! private keys never enter the library: an approval is an ECDSA P-256 signature made elsewhere

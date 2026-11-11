@@ -199,7 +199,7 @@ private:
     return {};
   }
 
-  // C_Initialize with the operating system's locking, as the plan requires. A module that another
+  // C_Initialize with the operating system's locking (CKF_OS_LOCKING_OK). A module that another
   // component of the process initialised first answers CKR_CRYPTOKI_ALREADY_INITIALIZED; it is
   // used as it is and never finalised by this library.
   static outcome initialize(loaded_module& module) {

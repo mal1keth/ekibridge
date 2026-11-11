@@ -852,9 +852,10 @@ inline bool key_ok(std::string_view k) {
 
 } // namespace audit_detail
 
-// An independent strict reading of an audit log, written from the ABI 2 contract (section 5 and
-// amendments 6, 12 and 15) rather than from either library: the head of the log if every line is
-// exactly a record that continues the chain, std::nullopt otherwise.
+// An independent strict reading of an audit log, written from docs/ffi-contract.md ("Audit log":
+// canonical decimals, the 512-byte limit, the status and op values) rather than from either
+// library: the head of the log if every line is exactly a record that continues the chain,
+// std::nullopt otherwise.
 inline std::optional<AuditHead> audit_rebuild(bytes log) {
   using namespace audit_detail;
   AuditHead head;

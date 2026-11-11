@@ -1,5 +1,6 @@
-// The PKCS#11 key store through the C ABI. Mirrors core-rs/tests/ffi_keystore_pkcs11.rs: plan
-// §4.4 ks_open (PKCS#11) and every store row; §4.3 object mapping and lifecycle.
+// The PKCS#11 key store through the C ABI. Mirrors core-rs/tests/ffi_keystore_pkcs11.rs: the
+// ks_open (PKCS#11) rows and every store row of docs/ffi-contract.md ("Per-function contract"),
+// and its "PKCS#11 object mapping and lifecycle".
 //
 // Needs a token: `source scripts/softhsm-init.sh` exports EKI_PKCS11_MODULE,
 // EKI_PKCS11_TOKEN_LABEL and EKI_PKCS11_PIN; when any is unset, or the library is built without
@@ -92,8 +93,8 @@ std::mutex& token_mutex() {
 // Holds the token mutex for the whole test and skips when no token is configured or PKCS#11 is not
 // compiled in. Tests that need a store open one with ASSERT_TRUE(open_store()). The open-failure
 // tests deliberately run with no other handle open: while any handle of this process is logged
-// in, C_Login answers CKR_USER_ALREADY_LOGGED_IN, which §4.3 maps to "proceed", so a wrong PIN
-// would not be noticed.
+// in, C_Login answers CKR_USER_ALREADY_LOGGED_IN, which counts as success, so a wrong PIN would
+// not be noticed.
 // Members are destroyed in reverse order: the store closes before the lock is released.
 class FfiKeystorePkcs11 : public testing::Test {
 protected:
@@ -139,7 +140,7 @@ TEST_F(FfiKeystorePkcs11, OpenAndClose) {
   EXPECT_TRUE(info_is(info, EKI_KEY_HMAC_SHA256, "eki-test"));
 }
 
-// §4.4: wrong PIN → BACKEND.
+// Wrong PIN → BACKEND.
 TEST_F(FfiKeystorePkcs11, OpenWrongPinIsBackend) {
   for (const std::string& pin :
        {std::string{"0000"}, std::string{"12345"}, std::string(255, '9')}) {
@@ -153,7 +154,7 @@ TEST_F(FfiKeystorePkcs11, OpenWrongPinIsBackend) {
   }
 }
 
-// §4.4: unknown token label → BACKEND.
+// Unknown token label → BACKEND.
 TEST_F(FfiKeystorePkcs11, OpenUnknownTokenLabelIsBackend) {
   for (const std::string& label : {std::string{"no-such-token"}, std::string(32, 'z')}) {
     const eki_ks_config config{
@@ -177,7 +178,7 @@ TEST_F(FfiKeystorePkcs11, OpenMissingModuleIsBackend) {
   EXPECT_TRUE(open_fails(config, EKI_ERR_BACKEND));
 }
 
-// §4.2 ks_open: NULL config fields (field order) → NULL_POINTER.
+// ks_open: NULL config fields (field order) → NULL_POINTER.
 TEST_F(FfiKeystorePkcs11, OpenNullConfigFields) {
   const char* m = token().module.c_str();
   const char* l = token().label.c_str();
@@ -189,8 +190,8 @@ TEST_F(FfiKeystorePkcs11, OpenNullConfigFields) {
       open_fails(eki_ks_config{EKI_KS_PKCS11, nullptr, nullptr, nullptr}, EKI_ERR_NULL_POINTER));
 }
 
-// §4.2 ks_open lists the NULL checks of all three fields before the format checks: a
-// malformed token label together with a NULL PIN is NULL_POINTER.
+// ks_open makes the NULL checks of all three fields before the format checks ("Validation
+// order"): a malformed token label together with a NULL PIN is NULL_POINTER.
 TEST_F(FfiKeystorePkcs11, OpenNullFieldBeforeFormatOfAnotherField) {
   EXPECT_TRUE(open_fails(eki_ks_config{EKI_KS_PKCS11, token().module.c_str(), "", nullptr},
                          EKI_ERR_NULL_POINTER));
@@ -279,8 +280,8 @@ TEST_F(FfiKeystorePkcs11, LastErrorRows) {
 
 // --- PKCS#11-specific ------------------------------------------------------------------------
 
-// §4.4: `msg_len 0` for ks_hmac and ks_sign → OK. SoftHSM2 rejects a NULL data
-// pointer even with length 0 (§4.3), so the library must substitute a dummy pointer.
+// `msg_len 0` for ks_hmac and ks_sign → OK. SoftHSM2 rejects a NULL data pointer even with length
+// 0, so the library must substitute a dummy pointer.
 TEST_F(FfiKeystorePkcs11, EmptyMessageHmacAndSignAreOk) {
   ASSERT_TRUE(open_store());
   eki_key_id mac{};
@@ -316,7 +317,7 @@ TEST_F(FfiKeystorePkcs11, KeysPersistInTheTokenAcrossHandles) {
   ASSERT_TRUE(store().destroy(id));
 }
 
-// §4.3 lifecycle: close never logs out and finalizes only at zero open handles.
+// Lifecycle: close never logs out and finalizes only at zero open handles.
 TEST_F(FfiKeystorePkcs11, SecondHandleSurvivesClosingTheFirst) {
   ASSERT_TRUE(open_store());
   eki_key_id mac{};
@@ -343,7 +344,7 @@ TEST_F(FfiKeystorePkcs11, SecondHandleSurvivesClosingTheFirst) {
   EXPECT_EQ(name(scenarios::verify(pk, bytes("m"), sig)), name(EKI_OK));
 }
 
-// §4.3: destroy removes every object with the id (private and public halves).
+// Destroy removes every object with the id (private and public halves).
 TEST_F(FfiKeystorePkcs11, DestroyRemovesBothHalvesOfAKeyPair) {
   ASSERT_TRUE(open_store());
   eki_key_id kek{};
@@ -388,7 +389,7 @@ TEST_F(FfiKeystorePkcs11, OpenSucceedsAfterFailedOpens) {
   ASSERT_TRUE(store().generate(EKI_KEY_AES_256, "eki-test after failures", id));
 }
 
-// §4.3 lifecycle: login state belongs to the process, so while a handle is logged in, C_Login
+// Lifecycle: login state belongs to the process, so while a handle is logged in, C_Login
 // answers CKR_USER_ALREADY_LOGGED_IN and a second open succeeds whatever PIN it passes.
 TEST_F(FfiKeystorePkcs11, OpenWithWrongPinWhileLoggedInSucceeds) {
   ASSERT_TRUE(open_store());
@@ -438,7 +439,7 @@ TEST_F(FfiKeystorePkcs11, StoreLeavesTheCallersErrorQueueAsFound) {
   EXPECT_TRUE(eki_test::queue_holds_only(caller));
 }
 
-// --- objects the library did not create (§4.3) ---------------------------------------------------
+// --- objects the library did not create ("Foreign objects") --------------------------------------
 
 // A key id for objects made directly through the module: "eki-test-raw-id" and a tag byte.
 eki_key_id raw_id(char tag) {
@@ -544,7 +545,7 @@ public:
   }
 
   // A private token secret key of key_type (CKK_AES, CKK_GENERIC_SECRET) with the given value and
-  // label, carrying the usage attributes of its row in the §4.3 table.
+  // label, carrying the usage attributes of its row in the state table.
   testing::AssertionResult create_secret(const eki_key_id& id, CK_KEY_TYPE key_type,
                                          std::string label, std::span<const std::uint8_t> value) {
     CK_OBJECT_CLASS object_class = CKO_SECRET_KEY;
@@ -646,9 +647,9 @@ TEST_F(FfiKeystorePkcs11, ForeignObjectTakesTheIdAndCanBeDestroyed) {
   EXPECT_EQ(name(eki_ks_destroy(store().get(), &id)), name(EKI_ERR_KEY_NOT_FOUND));
 }
 
-// ks_wrap checks that both ids exist before it describes either (plan 4.2): a foreign kek with a
-// missing key is KEY_NOT_FOUND, and a foreign object is a backend failure only at the step that
-// needs its algorithm, after the type check of the kek.
+// ks_wrap checks that both ids exist before it describes either ("Per-function contract"): a
+// foreign kek with a missing key is KEY_NOT_FOUND, and a foreign object is a backend failure only
+// at the step that needs its algorithm, after the type check of the kek.
 TEST_F(FfiKeystorePkcs11, WrapChecksBothIdsBeforeDescribingAForeignObject) {
   ASSERT_TRUE(open_store());
   RawToken raw;
@@ -738,9 +739,9 @@ TEST_F(FfiKeystorePkcs11, KeyPairWithoutItsPublicHalfIsForeign) {
   EXPECT_EQ(name(eki_ks_get_info(store().get(), &ec, &info)), name(EKI_ERR_KEY_NOT_FOUND));
 }
 
-// Secret keys that another program created with the §4.3 attributes are keys of the library, and
-// the token computes what the stateless functions compute from the same key bytes: HMAC-SHA256
-// (CKM_SHA256_HMAC) and RFC 3394 key wrap (CKM_AES_KEY_WRAP).
+// Secret keys that another program created with the attributes of the mapping table are keys of
+// the library, and the token computes what the stateless functions compute from the same key
+// bytes: HMAC-SHA256 (CKM_SHA256_HMAC) and RFC 3394 key wrap (CKM_AES_KEY_WRAP).
 TEST_F(FfiKeystorePkcs11, SecretKeysCreatedElsewhereAreUsable) {
   ASSERT_TRUE(open_store());
   RawToken raw;

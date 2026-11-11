@@ -1,6 +1,7 @@
 //! ABI version 2 call wrappers and the scenarios shared by the software and PKCS#11 suites: the
 //! state table, rotate, revoke, HMAC verification, dual control of destroy and the format rows
-//! of `eki_ks_open_v2` (plan-L12 sections 3, 4, 6 and 7).
+//! of `eki_ks_open_v2` (docs/ffi-contract.md: "Key states", "Opening a store with ABI 2", "Dual
+//! control", "Per-function contract").
 
 use core::ffi::c_char;
 use std::ffi::CString;

@@ -1,9 +1,10 @@
 // Layer 2 of the key store: the logic that every backend shares. Each operation follows the
-// per-function sequence of the ABI contract (plan 4.2, ABI 2 contract section 3): selector and
-// format checks first, then the store state checks in their fixed order (existence, type, key
-// state), and only then the backend operation. Statuses that follow from caller input or store
-// state are decided here and never by a backend. Every logged operation runs in run_logged, which
-// writes its audit record and undoes its changes when it does not succeed (finish below).
+// per-function sequence of docs/ffi-contract.md ("Validation order", "Per-function contract" and
+// "Key states"): selector and format checks first, then the store state checks in their fixed
+// order (existence, type, key state), and only then the backend operation. Statuses that follow
+// from caller input or store state are decided here and never by a backend. Every logged
+// operation runs in run_logged, which writes its audit record and undoes its changes when it does
+// not succeed (finish below).
 //
 // This file holds the shared pieces and the ABI version 1 operations; open.cpp opens and closes
 // handles, lifecycle.cpp holds the operations ABI version 2 adds.
@@ -470,8 +471,9 @@ eki_status unwrap(eki_ks& ks, const key_id& kek, bytes blob, eki_key_alg alg, co
   });
 }
 
-// Any object that carries the id can be destroyed, a foreign one included (plan 4.3). A handle
-// with approvers destroys only through destroy_approve: an existing key is APPROVAL_REQUIRED.
+// Any object that carries the id can be destroyed, a foreign one included ("Foreign objects"). A
+// handle with approvers destroys only through destroy_approve: an existing key is
+// APPROVAL_REQUIRED.
 eki_status destroy(eki_ks& ks, const key_id& id) {
   return run_logged(ks, audit::op::destroy, [&](call& current) {
     current.record.key = id;

@@ -1,20 +1,23 @@
-//! The PKCS#11 backend (plan 4.3): keys are token objects, reached through one read-write
-//! session per handle on a module that a process-wide registry loads and initialises.
+//! The PKCS#11 backend (docs/ffi-contract.md, "PKCS#11 object mapping and lifecycle"): keys are
+//! token objects, reached through one read-write session per handle on a module that a
+//! process-wide registry loads and initialises.
 //!
-//! Objects follow the plan's mapping table, so that the C++ library and this one can each use
-//! the keys the other created in the same token. A key is the set of objects that carry its
-//! `CKA_ID`: one secret key object (AES-256, HMAC-SHA256), or a private and a public key object
-//! (ECDSA P-256). Objects that carry an id but form none of these shapes, or whose `CKA_LABEL` is
-//! not a valid label, were made by another program: they still take the id ([`Found::Foreign`]).
+//! Objects follow the mapping table of the contract, so that the C++ library and this one can
+//! each use the keys the other created in the same token. A key is the set of objects that carry
+//! its `CKA_ID`: one secret key object (AES-256, HMAC-SHA256), or a private and a public key
+//! object (ECDSA P-256). Objects that carry an id but form none of these shapes, or whose
+//! `CKA_LABEL` is not a valid label, were made by another program: they still take the id
+//! ([`Found::Foreign`]).
 //!
-//! The lifecycle state of a key is its usage attributes (ABI 2 contract section 3): the
-//! "protect" group (`CKA_WRAP` and `CKA_ENCRYPT` of an AES key, `CKA_SIGN` of an HMAC key or of
-//! the private half of a key pair) and the "check" group (`CKA_UNWRAP` and `CKA_DECRYPT`,
-//! `CKA_VERIFY`, `CKA_VERIFY` of the public half). Both groups TRUE is ACTIVE, protect FALSE and
-//! check TRUE is RETIRED, both FALSE is REVOKED; any other combination, or a flag that cannot be
-//! read, makes the objects foreign. Only these attributes are read: SoftHSM2 sets usage flags
-//! outside the templates to TRUE by default (for example `CKA_SIGN` of an AES key), so they say
-//! nothing about the state. The token itself then refuses what the state forbids.
+//! The lifecycle state of a key is its usage attributes ("State in usage attributes" under the
+//! same heading of the contract): the "protect" group (`CKA_WRAP` and `CKA_ENCRYPT` of an AES
+//! key, `CKA_SIGN` of an HMAC key or of the private half of a key pair) and the "check" group
+//! (`CKA_UNWRAP` and `CKA_DECRYPT`, `CKA_VERIFY`, `CKA_VERIFY` of the public half). Both groups
+//! TRUE is ACTIVE, protect FALSE and check TRUE is RETIRED, both FALSE is REVOKED; any other
+//! combination, or a flag that cannot be read, makes the objects foreign. Only these attributes
+//! are read: SoftHSM2 sets usage flags outside the templates to TRUE by default (for example
+//! `CKA_SIGN` of an AES key), so they say nothing about the state. The token itself then refuses
+//! what the state forbids.
 //!
 //! Every operation looks its objects up again by id. Object handles are not kept between calls,
 //! because another session or process may destroy or replace the objects in between; when that
@@ -234,7 +237,7 @@ fn initialize(context: &Pkcs11) -> BackendResult<bool> {
 /// The fields drop in declaration order: the session closes before the lease is released, so
 /// `C_Finalize`, when it comes, finds no session of this handle open. Closing never logs out:
 /// the login state belongs to the whole process, and `C_Logout` would log out every other handle
-/// on the token (plan 4.3).
+/// on the token.
 pub struct Pkcs11Backend {
     session: Session,
     _lease: Lease,
@@ -288,7 +291,8 @@ fn token_label_is(reported: &str, wanted: &[u8; PKCS11_TOKEN_LABEL_MAX_LEN]) -> 
 }
 
 /// `C_Login` as the user. While a handle of this process is logged in to the token, the module
-/// answers `CKR_USER_ALREADY_LOGGED_IN` whatever the PIN, which counts as success (plan 4.3).
+/// answers `CKR_USER_ALREADY_LOGGED_IN` whatever the PIN, which counts as success ("Known
+/// limitations" in docs/ffi-contract.md).
 fn log_in(session: &Session, user_pin: RawAuthPin) -> BackendResult<()> {
     match session.login_with_raw(UserType::User, &user_pin) {
         Ok(()) | Err(CkError::Pkcs11(RvError::UserAlreadyLoggedIn, _)) => Ok(()),
@@ -344,7 +348,7 @@ impl Backend for Pkcs11Backend {
 
     fn sign(&mut self, id: &KeyId, msg: &[u8]) -> BackendResult<[u8; EKI_P256_SIGNATURE_LEN]> {
         let key = self.locate_key(id, KeyAlg::EcdsaP256)?;
-        // CKM_ECDSA signs a digest that the caller computes (plan 4.3, "sign").
+        // CKM_ECDSA signs a digest that the caller computes.
         let digest = Sha256::digest(msg);
         self.sign_with(&Mechanism::Ecdsa, key.key, &digest)
     }
@@ -408,10 +412,10 @@ impl Backend for Pkcs11Backend {
     ) -> BackendResult<()> {
         let wrapping = self.locate_key(kek, KeyAlg::Aes256)?;
         let template = secret_key_template(alg, label, id)?;
-        // Every failure here counts as a failed integrity check (plan 4.3, return-code mapping):
-        // SoftHSM2 reports a wrong RFC 3394 check value as CKR_GENERAL_ERROR, which cannot be
-        // told apart from other causes, so the message names the code. The store has checked
-        // everything else by now.
+        // Every failure here counts as a failed integrity check ("Known limitations" in
+        // docs/ffi-contract.md): SoftHSM2 reports a wrong RFC 3394 check value as
+        // CKR_GENERAL_ERROR, which cannot be told apart from other causes, so the message names
+        // the code. The store has checked everything else by now.
         self.session
             .unwrap_key(&Mechanism::AesKeyWrap, wrapping.key, blob, &template)
             .map_err(|error| BackendError::AuthFailed(reason(error)))?;
@@ -458,7 +462,7 @@ impl Pkcs11Backend {
 
     /// A single-part signature or MAC with `mechanism` under `key`: exactly `N` bytes out.
     /// cryptoki passes `data.as_ptr()`, which is never NULL, even for an empty slice: SoftHSM2
-    /// answers `CKR_ARGUMENTS_BAD` for a NULL data pointer even with length 0 (plan 4.3).
+    /// answers `CKR_ARGUMENTS_BAD` for a NULL data pointer even with length 0.
     fn sign_with<const N: usize>(
         &mut self,
         mechanism: &Mechanism<'_>,
@@ -534,7 +538,7 @@ impl Pkcs11Backend {
 
     /// The key that `kinds` form, with its label; `None` when they are not a key of the
     /// library. For a key pair both halves must name P-256 in `CKA_EC_PARAMS`, the private half
-    /// checked first. `CKA_VALUE_LEN` is never read (plan 4.3, "get_info").
+    /// checked first. `CKA_VALUE_LEN` is never read ("Known limitations" in docs/ffi-contract.md).
     fn describe(&self, kinds: &[ObjectKind<ObjectHandle>]) -> BackendResult<Option<KeyObjects>> {
         let (alg, key, public) = match shape(kinds) {
             Shape::Foreign => return Ok(None),
@@ -671,7 +675,7 @@ impl KeyObjects {
     }
 }
 
-// --- Lifecycle state (ABI 2 contract section 3) -------------------------------------------------
+// --- Lifecycle state ("State in usage attributes" in docs/ffi-contract.md) ----------------------
 
 /// Which object of a key carries a group of flags.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -824,7 +828,7 @@ fn key_pair<H: Copy>(first: &ObjectKind<H>, second: &ObjectKind<H>) -> Shape<H> 
     }
 }
 
-// --- Templates (plan 4.3, "PKCS#11 object mapping") ---------------------------------------------
+// --- Templates ("PKCS#11 object mapping and lifecycle" in docs/ffi-contract.md) -----------------
 
 /// The attributes every object of the library carries: token object, private unless it is the
 /// public half of a key pair, the 16 id bytes, the label without its NUL.

@@ -1,8 +1,9 @@
 //! `eki_ecdsa_p256_verify` through the C ABI.
 //!
-//! Vectors: RFC 6979 A.2.5 (P-256 with SHA-256, messages "sample" and "test"). Rows: plan
-//! §4.4 `ecdsa_verify`; §4.2 sequence (format and parse failures of the public key are
-//! INVALID_ARGUMENT, every signature failure is AUTH_FAILED, high-s is accepted).
+//! Vectors: RFC 6979 A.2.5 (P-256 with SHA-256, messages "sample" and "test"). Rows: the
+//! `ecdsa_verify` row and sequence of docs/ffi-contract.md ("Per-function contract": format and
+//! parse failures of the public key are INVALID_ARGUMENT, every signature failure is
+//! AUTH_FAILED, high-s is accepted).
 
 mod common;
 
@@ -92,7 +93,7 @@ fn empty_message_with_null_pointer() {
     }
 }
 
-// --- §4.4 rows ----------------------------------------------------------------------------
+// --- Rows ---------------------------------------------------------------------------------
 
 #[test]
 fn public_key_prefix_not_04_is_invalid() {

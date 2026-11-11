@@ -1073,9 +1073,10 @@ fn audit_number_is(text: &[u8], value: u64) -> bool {
     text == value.to_string().as_bytes()
 }
 
-/// An independent strict reading of an audit log, written from the ABI 2 contract (section 5
-/// and amendments 6, 12 and 15) rather than from either library: the head of `log` if every
-/// line is exactly a record that continues the chain, `None` otherwise.
+/// An independent strict reading of an audit log, written from docs/ffi-contract.md ("Audit log":
+/// canonical decimals, the 512-byte limit, the status and op values) rather than from either
+/// library: the head of `log` if every line is exactly a record that continues the chain, `None`
+/// otherwise.
 pub fn audit_rebuild(log: &[u8]) -> Option<AuditHead> {
     let mut head = AuditHead {
         records: 0,

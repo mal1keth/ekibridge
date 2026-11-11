@@ -1,8 +1,9 @@
-// Key lifecycle, dual control and the audit log on a PKCS#11 token (ABI 2 contract sections 3, 4
-// and 6). The scenarios of lifecycle_support.hpp run on the token; the token-only rows check the
-// usage attributes that hold the state, that the token itself refuses what the state forbids,
-// that a combination of attributes outside the table makes the key foreign, that state is shared
-// between handles, and that a state change stays when its audit record cannot be written.
+// Key lifecycle, dual control and the audit log on a PKCS#11 token (docs/ffi-contract.md: "Key
+// states", "Opening a store with ABI 2", "Dual control"). The scenarios of lifecycle_support.hpp
+// run on the token; the token-only rows check the usage attributes that hold the state, that the
+// token itself refuses what the state forbids, that a combination of attributes outside the table
+// makes the key foreign, that state is shared between handles, and that a state change stays when
+// its audit record cannot be written.
 //
 // Needs a token, as ffi_keystore_pkcs11_test.cpp: EKI_PKCS11_MODULE, EKI_PKCS11_TOKEN_LABEL and
 // EKI_PKCS11_PIN; skipped otherwise or when the library is built without EKI_WITH_PKCS11.
@@ -225,7 +226,8 @@ private:
 
 using Flags = std::map<CK_ATTRIBUTE_TYPE, bool>;
 
-// The usage attributes of each state (ABI 2 contract section 3, second table).
+// The usage attributes of each state ("PKCS#11 object mapping and lifecycle" in
+// docs/ffi-contract.md).
 Flags aes_flags(eki_key_state state) {
   const bool active = state == EKI_KEY_STATE_ACTIVE;
   const bool live = state != EKI_KEY_STATE_REVOKED;
@@ -433,7 +435,7 @@ TEST_F(FfiLifecyclePkcs11, OtherAttributeCombinationsAreForeign) {
 }
 
 // When the key is destroyed elsewhere while a request is pending, the completing approval is
-// KEY_NOT_FOUND and the request is removed (ABI 2 contract section 6).
+// KEY_NOT_FOUND and the request is removed ("Dual control" in docs/ffi-contract.md).
 TEST_F(FfiLifecyclePkcs11, CompletingApprovalForAKeyDestroyedElsewhere) {
   const Approvers approvers(2);
   Handle h(config());

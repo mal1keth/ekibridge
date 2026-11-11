@@ -1,9 +1,9 @@
-// Opening and closing a key store handle (ABI 2 contract section 4). eki_ks_open and eki_ks_open_v2
-// share one path: open builds the version 2 configuration with no audit log and no approvers and
-// hands it to open_v2. The checks run in contract order: the backend selector; the NULL checks of
-// the fields in field order; the formats of the fields in field order; then the backend is opened,
-// and the audit log last. Failures before the handle exists are reported as a status only: there
-// is no handle to carry a message.
+// Opening and closing a key store handle (docs/ffi-contract.md, "Opening a store with ABI 2").
+// eki_ks_open and eki_ks_open_v2 share one path: open builds the version 2 configuration with no
+// audit log and no approvers and hands it to open_v2. The checks run in contract order: the
+// backend selector; the NULL checks of the fields in field order; the formats of the fields in
+// field order; then the backend is opened, and the audit log last. Failures before the handle
+// exists are reported as a status only: there is no handle to carry a message.
 
 #include "store_internal.hpp"
 
@@ -55,7 +55,7 @@ bytes approver_bytes(const eki_ks_config_v2& config) noexcept {
 
 // Step 1 for the fields: every NULL check, in field order, before any format check. The PKCS#11
 // fields count only for that backend; the approver keys only when approver_count is not 0, whatever
-// the count (amendment 1).
+// the count ("Opening a store with ABI 2", step 3).
 bool fields_present(const eki_ks_config_v2& config) noexcept {
   if (config.backend == EKI_KS_PKCS11 &&
       (config.pkcs11_module_path == nullptr || config.pkcs11_token_label == nullptr ||

@@ -33,20 +33,21 @@ eki_status id_taken(eki_ks& ks, const key_id& id, bool& exists);
 // The existence check: the objects that carry id, whether or not they are a key the library can
 // describe. When there are none the result is nullopt and status is EKI_ERR_KEY_NOT_FOUND, or the
 // backend's failure. An operation that takes two ids checks both before it describes either
-// (plan 4.2), so that a foreign object never hides a missing key.
+// ("Per-function contract" in docs/ffi-contract.md), so that a foreign object never hides a
+// missing key.
 std::optional<key_lookup> find_object(eki_ks& ks, const key_id& id, eki_status& status);
 
-// The key that existing objects are. A foreign object (plan 4.3) gives nullopt with status
-// EKI_ERR_BACKEND and a last-error text.
+// The key that existing objects are. A foreign object ("Foreign objects" in docs/ffi-contract.md)
+// gives nullopt with status EKI_ERR_BACKEND and a last-error text.
 std::optional<key_info> describe(eki_ks& ks, const key_lookup& found, eki_status& status);
 
 // find_object, then describe: the key that id names, KEY_NOT_FOUND before a foreign object.
 std::optional<key_info> find_existing(eki_ks& ks, const key_id& id, eki_status& status);
 
-// What an operation does with a key, as the state table of ABI 2 contract section 3 sorts them:
-// protect something new (sign, hmac, wrap as the kek, rotate as the old key: ACTIVE only), or
-// check or recover what the key protected before (get_public_key, hmac_verify, wrap as the key
-// being wrapped, unwrap as the kek: ACTIVE or RETIRED).
+// What an operation does with a key, as the state table ("Key states" in docs/ffi-contract.md)
+// sorts them: protect something new (sign, hmac, wrap as the kek, rotate as the old key: ACTIVE
+// only), or check or recover what the key protected before (get_public_key, hmac_verify, wrap as
+// the key being wrapped, unwrap as the kek: ACTIVE or RETIRED).
 enum class key_use : std::uint8_t { protect, recover };
 
 // EKI_OK when a key in state may be used this way, else EKI_ERR_KEY_STATE.

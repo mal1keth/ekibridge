@@ -1,6 +1,7 @@
 //! Helpers for the ABI 2 modules (`ks_lifecycle`, `audit`, `ks_pkcs11_lifecycle`): flow helpers
 //! for the new calls, approver keys held in a separate software store, keys brought into a given
-//! state, and the state table of the ABI 2 contract §3 run on the handles of one library.
+//! state, and the state table of docs/ffi-contract.md ("Key states") run on the handles of one
+//! library.
 
 use std::ffi::CString;
 
@@ -20,7 +21,7 @@ use super::{Report, unique_label};
 /// The three key states, in the order of the state table's columns.
 pub const STATES: [i32; 3] = [ACTIVE, RETIRED, REVOKED];
 
-/// The 20 ASCII bytes an approval message starts with (§6).
+/// The 20 ASCII bytes an approval message starts with (docs/ffi-contract.md, "Dual control").
 pub const DESTROY_DOMAIN: &[u8; 20] = b"ekibridge-destroy-v1";
 
 /// Name of a key state for messages.
@@ -137,7 +138,7 @@ pub fn audit_head(st: &Store) -> Flow<([u8; 32], u64)> {
     Ok((hash, seq))
 }
 
-/// The message an approver signs for `request` and the key `id` (§6).
+/// The message an approver signs for `request` and the key `id` ("Dual control").
 pub fn approval_message(request: &[u8; 32], id: &eki_key_id) -> Vec<u8> {
     let mut msg = DESTROY_DOMAIN.to_vec();
     msg.extend_from_slice(request);
@@ -150,8 +151,8 @@ pub fn approval_message(request: &[u8; 32], id: &eki_key_id) -> Vec<u8> {
 // ---------------------------------------------------------------------------------------------
 
 /// ECDSA P-256 approver keys in a software store of one library, outside the store under test:
-/// approver private keys never enter the library through the ABI 2 interface (§6). Approvals are
-/// signed with that library's `eki_ks_sign`.
+/// approver private keys never enter the library through the ABI 2 interface ("Dual control" in
+/// docs/ffi-contract.md). Approvals are signed with that library's `eki_ks_sign`.
 pub struct Approvers<'l> {
     store: Store<'l>,
     ids: Vec<eki_key_id>,
@@ -246,13 +247,13 @@ pub fn destroy_all(r: &mut Report, st: &Store, made: &[eki_key_id]) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The state table (§3)
+// The state table ("Key states" in docs/ffi-contract.md)
 // ---------------------------------------------------------------------------------------------
 
-/// Every row of the state table of §3, for each of the three states, on the handles of one
-/// library: `plain` has no approvers, `dual` has approvers and serves the `destroy_request` row,
-/// which a handle without approvers answers with `EKI_ERR_UNSUPPORTED`. Each row uses fresh keys;
-/// the outputs of a failed call must be zero-filled. Every id created is pushed onto `made`.
+/// Every row of the state table, for each of the three states, on the handles of one library:
+/// `plain` has no approvers, `dual` has approvers and serves the `destroy_request` row, which a
+/// handle without approvers answers with `EKI_ERR_UNSUPPORTED`. Each row uses fresh keys; the
+/// outputs of a failed call must be zero-filled. Every id created is pushed onto `made`.
 pub fn state_table_rows(
     r: &mut Report,
     plain: &Store,

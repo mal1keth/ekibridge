@@ -1,5 +1,6 @@
-//! The audit log of a key store handle (ABI 2 contract, section 5): one line per call, appended to
-//! a file and chained by SHA-256, and the stateless verifier behind `eki_audit_verify`.
+//! The audit log of a key store handle (docs/ffi-contract.md, "Audit log"): one line per call,
+//! appended to a file and chained by SHA-256, and the stateless verifier behind
+//! `eki_audit_verify`.
 //!
 //! A record is one line with a fixed grammar:
 //!
@@ -514,15 +515,38 @@ pub fn parse_path(text: &[u8]) -> Result<PathBuf, Error> {
     Ok(PathBuf::from(path))
 }
 
+/// Whether `path` names something other than a regular file right now (a directory, a device, a
+/// FIFO, a socket). Opening a FIFO for reading waits for a writer. The C++ library avoids that
+/// with `O_NONBLOCK`, which the standard library offers only through a libc binding, so here such
+/// a path is refused before it is opened; a path replaced by a FIFO between this check and the
+/// open still makes the verifier wait (docs/ffi-contract.md, "Known differences"). A path that
+/// does not exist, or cannot be examined, is left to the open that follows, which reports its own
+/// failure.
+fn names_special_file(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|metadata| !metadata.is_file())
+}
+
+/// Whether the open `file` is a regular file. This is the check that decides: the file a path
+/// names can change between the check of the path and the open.
+fn is_regular_file(file: &File) -> bool {
+    file.metadata().is_ok_and(|metadata| metadata.is_file())
+}
+
 /// `eki_audit_verify`: the path format (`INVALID_ARGUMENT`), the file (`BACKEND` when it cannot
-/// be opened or read, a directory included), the chain and `expected_head` (`AUTH_FAILED`).
+/// be opened or read, or is not a regular file), the chain and `expected_head` (`AUTH_FAILED`).
 /// Returns the number of records.
 pub fn verify_file(
     path: &[u8],
     expected_head: Option<&[u8; EKI_AUDIT_HASH_LEN]>,
 ) -> Result<u64, Error> {
     let path = parse_path(path)?;
+    if names_special_file(&path) {
+        return Err(Error::Backend);
+    }
     let file = File::open(path).map_err(|_| Error::Backend)?;
+    if !is_regular_file(&file) {
+        return Err(Error::Backend);
+    }
     let chain = verify(file).map_err(|error| match error {
         VerifyError::Io(_) => Error::Backend,
         VerifyError::Invalid => Error::AuthFailed,
@@ -573,6 +597,10 @@ impl Sink for LogFile {
     }
 }
 
+/// The reason given when the path of a log names something other than a regular file.
+/// cbindgen:ignore
+const NOT_REGULAR: &str = "the audit log is not a regular file";
+
 /// Why a log could not be opened.
 #[derive(Debug, PartialEq, Eq)]
 pub enum OpenError {
@@ -593,10 +621,14 @@ pub struct AuditLog {
 
 impl AuditLog {
     /// Opens the log at `path` for the life of a handle: opened for appending and created if
-    /// missing, on Unix with mode 0600; locked exclusively without waiting (a lock of the open file, which
-    /// a second open of the same file in this process does not share); then verified from the
-    /// start. Nothing is written: a log that fails is left byte for byte as it was.
+    /// missing, on Unix with mode 0600; locked exclusively without waiting (a lock of the open
+    /// file, which a second open of the same file in this process does not share); checked to be
+    /// a regular file; then verified from the start. Nothing is written: a log that fails is left
+    /// byte for byte as it was.
     pub fn open(path: &Path) -> Result<Self, OpenError> {
+        if names_special_file(path) {
+            return Err(OpenError::Failed(NOT_REGULAR.to_owned()));
+        }
         let mut options = OpenOptions::new();
         options.read(true).append(true).create(true);
         // The owner-only mode is a Unix permission; other targets (the WebAssembly build) have none.
@@ -611,6 +643,9 @@ impl AuditLog {
                 TryLockError::Error(error) => format!("locking the audit log failed: {error}"),
             })
         })?;
+        if !is_regular_file(&file) {
+            return Err(OpenError::Failed(NOT_REGULAR.to_owned()));
+        }
         let chain = verify(&file).map_err(|error| match error {
             VerifyError::Io(error) => {
                 OpenError::Failed(format!("reading the audit log failed: {error}"))
@@ -1077,6 +1112,37 @@ mod tests {
             Err(Error::Backend),
             "a directory"
         );
+        std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[test]
+    fn a_log_must_be_a_regular_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "ekicore-rs-audit-special-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        for (row, path) in [
+            ("a directory", dir.clone()),
+            ("/dev/null", PathBuf::from("/dev/null")),
+        ] {
+            assert_eq!(
+                verify_file(path.as_os_str().as_bytes(), None),
+                Err(Error::Backend),
+                "{row}: verify"
+            );
+            assert_eq!(
+                AuditLog::open(&path).map(|_| ()),
+                Err(OpenError::Failed(NOT_REGULAR.to_owned())),
+                "{row}: open"
+            );
+        }
+        assert!(is_regular_file(
+            &File::create(dir.join("file")).expect("created")
+        ));
+        assert!(!is_regular_file(&File::open("/dev/null").expect("opens")));
         std::fs::remove_dir_all(&dir).expect("cleanup");
     }
 }

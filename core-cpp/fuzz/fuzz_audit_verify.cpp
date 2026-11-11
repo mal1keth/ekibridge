@@ -5,7 +5,7 @@
 // bytes, all the rest of the input.
 //
 // The oracle is ekifuzz::audit_rebuild: an independent, strict reading of the record grammar and
-// the hash chain written from the ABI 2 contract. Properties:
+// the hash chain written from docs/ffi-contract.md ("Audit log"). Properties:
 // * the status is EKI_OK or EKI_ERR_AUTH_FAILED (the file exists and is readable);
 // * the library accepts the file exactly when the rebuild does and expected_head, if given,
 //   equals the rebuilt head; it then reports the rebuilt number of records;

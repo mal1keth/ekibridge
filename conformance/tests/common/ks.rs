@@ -1,6 +1,6 @@
 //! Key-store helpers shared by `ks_software` and `ks_pkcs11`: flow helpers that stop a scenario
-//! at the first failed step, the store rows of the §4.4 matrix (run on any open store), and the
-//! ECDSA cross-verification.
+//! at the first failed step, the store rows of docs/ffi-contract.md ("Per-function contract", run
+//! on any open store), and the ECDSA cross-verification.
 
 use std::ffi::CString;
 
@@ -162,8 +162,8 @@ pub fn fresh_id() -> eki_key_id {
     eki_key_id { bytes }
 }
 
-/// The store rows of the §4.4 matrix, run on one open store. Creates its keys with unique labels
-/// and destroys them again.
+/// The store rows of docs/ffi-contract.md ("Per-function contract"), run on one open store.
+/// Creates its keys with unique labels and destroys them again.
 pub fn store_error_rows(r: &mut Report, st: &Store) -> Flow<()> {
     let lib = st.lib();
     let null = lib.null_store();

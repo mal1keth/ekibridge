@@ -1,6 +1,7 @@
-// The software key store through the C ABI. Mirrors core-rs/tests/ffi_keystore_software.rs: plan
-// §4.4 ks_open and every store row; §4.2 sequences, labels, outputs on error, last error and
-// thread safety. The scenarios shared with the PKCS#11 suite are in test_support.hpp.
+// The software key store through the C ABI. Mirrors core-rs/tests/ffi_keystore_software.rs: the
+// ks_open rows and every store row of docs/ffi-contract.md ("Per-function contract"), and its
+// sequences, labels, outputs on error, last error and thread safety. The scenarios shared with
+// the PKCS#11 suite are in test_support.hpp.
 
 #include "test_support.hpp"
 
@@ -56,7 +57,7 @@ TEST(FfiKeystoreSoftware, OpenIgnoresThePkcs11Fields) {
   ASSERT_TRUE(store.generate(EKI_KEY_HMAC_SHA256, "eki-test", id));
 }
 
-// §4.4: `backend 0`; `backend 99` → INVALID_ARGUMENT.
+// `backend 0`; `backend 99` → INVALID_ARGUMENT.
 TEST(FfiKeystoreSoftware, OpenUnknownBackendIsInvalid) {
   for (const eki_ks_backend backend : {0, 3, 99, -1, INT32_MIN, INT32_MAX}) {
     EXPECT_TRUE(
@@ -65,14 +66,14 @@ TEST(FfiKeystoreSoftware, OpenUnknownBackendIsInvalid) {
   }
 }
 
-// §4.4: PKCS#11 with `module_path NULL` → NULL_POINTER (UNSUPPORTED if PKCS#11 is not compiled
+// PKCS#11 with `module_path NULL` → NULL_POINTER (UNSUPPORTED if PKCS#11 is not compiled
 // in: the selector check, step 2, answers first).
 TEST(FfiKeystoreSoftware, OpenPkcs11WithNullModulePath) {
   const eki_status expected = eki_test::kWithPkcs11 ? EKI_ERR_NULL_POINTER : EKI_ERR_UNSUPPORTED;
   EXPECT_TRUE(open_fails(eki_ks_config{EKI_KS_PKCS11, nullptr, "ekibridge", "1234"}, expected));
 }
 
-// §4.4: required pointer NULL → NULL_POINTER; `*out` is NULL on failure.
+// Required pointer NULL → NULL_POINTER; `*out` is NULL on failure.
 TEST(FfiKeystoreSoftware, OpenNullPointers) {
   const eki_test::Opened opened = try_open(nullptr);
   EXPECT_EQ(name(opened.status), name(EKI_ERR_NULL_POINTER)) << "config NULL";
@@ -186,7 +187,7 @@ TEST_F(FfiKeystoreSoftwareScenario, LabelBoundedScan) {
   EXPECT_TRUE(all_zero(id_bytes(id)));
 }
 
-// §4.2 "Thread safety": one handle shared by several threads.
+// One handle shared by several threads ("Thread safety" in docs/ffi-contract.md).
 TEST_F(FfiKeystoreSoftwareScenario, OneHandleSharedByThreads) {
   eki_key_id mac{};
   ASSERT_TRUE(store().generate(EKI_KEY_HMAC_SHA256, "eki-test shared", mac));
@@ -222,8 +223,8 @@ TEST_F(FfiKeystoreSoftwareScenario, OneHandleSharedByThreads) {
 }
 
 // Wrap/unwrap preserves the key under many labels and ids (the Rust suite uses
-// proptest; here a deterministic sweep). The metadata is unauthenticated (plan §2): the same blob
-// may be unwrapped as either secret-key algorithm.
+// proptest; here a deterministic sweep). The metadata is unauthenticated ("Known limitations" in
+// docs/ffi-contract.md): the same blob may be unwrapped as either secret-key algorithm.
 TEST_F(FfiKeystoreSoftwareScenario, WrapUnwrapPreservesTheKey) {
   eki_key_id kek{};
   eki_key_id mac{};
@@ -256,7 +257,7 @@ TEST_F(FfiKeystoreSoftwareScenario, WrapUnwrapPreservesTheKey) {
   }
 }
 
-// §4.3: a failed unwrap creates nothing and leaves existing keys unchanged. Beyond their metadata
+// A failed unwrap creates nothing and leaves existing keys unchanged. Beyond their metadata
 // (checked in the unwrap rows), the keys still work exactly as before.
 TEST_F(FfiKeystoreSoftwareScenario, FailedUnwrapLeavesExistingKeysUsable) {
   eki_ks* ks = store().get();
@@ -297,7 +298,7 @@ TEST_F(FfiKeystoreSoftwareScenario, FailedUnwrapLeavesExistingKeysUsable) {
   EXPECT_EQ(after, before);
 }
 
-// §4.2: an id is taken while any object carries it, and only then. Once destroyed, an id can be
+// An id is taken while any object carries it, and only then. Once destroyed, an id can be
 // given to an unwrapped key, which has the new algorithm and label.
 TEST_F(FfiKeystoreSoftwareScenario, DestroyedIdIsFreeForUnwrap) {
   eki_ks* ks = store().get();

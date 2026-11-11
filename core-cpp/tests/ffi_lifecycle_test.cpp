@@ -1,5 +1,6 @@
-// Key lifecycle and dual control through the C ABI on the software backend (ABI 2 contract sections
-// 3, 4, 6 and 7). The same scenarios run on a token in ffi_lifecycle_pkcs11_test.cpp.
+// Key lifecycle and dual control through the C ABI on the software backend (docs/ffi-contract.md:
+// "Key states", "Opening a store with ABI 2", "Dual control", "Per-function contract"). The same
+// scenarios run on a token in ffi_lifecycle_pkcs11_test.cpp.
 
 #include "lifecycle_support.hpp"
 #include "test_support.hpp"

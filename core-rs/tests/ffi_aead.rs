@@ -3,8 +3,9 @@
 //! Vectors: RFC 8439 §2.8.2 and Appendix A.5 (ChaCha20-Poly1305); the GCM specification
 //! (McGrew and Viega, "The Galois/Counter Mode of Operation", revised) test cases 13–16, the
 //! AES-256 cases with 96-bit IVs (17 and 18 use 8- and 60-byte IVs and are excluded, since the
-//! ABI mandates 12-byte nonces). Rows: plan §4.4 `aead_seal` and `aead_open`; §4.2 sequences
-//! and zero-on-error.
+//! ABI mandates 12-byte nonces). Rows: `aead_seal` and `aead_open` of docs/ffi-contract.md
+//! ("Per-function contract"), the validation order and zero-on-error ("Validation order",
+//! "Outputs on error").
 
 mod common;
 
@@ -286,7 +287,7 @@ fn vectors_open() {
     }
 }
 
-// --- §4.4 rows: aead_seal -----------------------------------------------------------------
+// --- Rows: aead_seal ----------------------------------------------------------------------
 
 #[test]
 fn seal_unknown_alg_is_invalid_and_zeroes_outputs() {
@@ -411,7 +412,7 @@ fn seal_aad_null_len_zero_is_ok() {
 
 #[test]
 fn seal_null_ct_out_is_checked_before_the_selector() {
-    // §4.4: `ct_out NULL, pt_len 1, alg 99` → NULL_POINTER (step 1 precedes step 2).
+    // `ct_out NULL, pt_len 1, alg 99` → NULL_POINTER (step 1 precedes step 2).
     let c = gcm16();
     let mut tag = prefill(16);
     let status = seal(
@@ -516,9 +517,9 @@ fn seal_pt_len_above_max_is_invalid_and_leaves_ct_out_untouched() {
     let mut ct = prefill(1);
     let mut tag = prefill(16);
     // SAFETY: `pt_len` deliberately exceeds the 1-byte buffers. The contract requires the
-    // library to reject `pt_len > EKI_AEAD_MAX_LEN` (§4.2 step 3) before touching `pt` or
-    // `ct_out`, so no out-of-bounds access happens in a conforming library; every other pointer
-    // is a live buffer of the length passed with it.
+    // library to reject `pt_len > EKI_AEAD_MAX_LEN` (step 3 of "Validation order") before touching
+    // `pt` or `ct_out`, so no out-of-bounds access happens in a conforming library; every other
+    // pointer is a live buffer of the length passed with it.
     let status = unsafe {
         eki_aead_seal(
             c.alg,
@@ -535,12 +536,12 @@ fn seal_pt_len_above_max_is_invalid_and_leaves_ct_out_untouched() {
         )
     };
     assert_eq!(status, EKI_ERR_INVALID_ARGUMENT);
-    // `pt_len` is outside its valid range, so `ct_out` is not written (§4.2 outputs on error).
+    // `pt_len` is outside its valid range, so `ct_out` is not written ("Outputs on error").
     assert_untouched(&ct);
     assert_zero(&tag);
 }
 
-// --- §4.4 rows: aead_open -----------------------------------------------------------------
+// --- Rows: aead_open ----------------------------------------------------------------------
 
 #[test]
 fn open_tag_bit_flipped_is_auth_failed_and_zeroes_pt_out() {
@@ -787,8 +788,8 @@ fn open_ct_len_above_max_is_invalid_and_leaves_pt_out_untouched() {
     let ct = [0_u8; 1];
     let mut pt = prefill(1);
     // SAFETY: `ct_len` deliberately exceeds the 1-byte buffers. The contract requires the
-    // library to reject `ct_len > EKI_AEAD_MAX_LEN` (§4.2 step 3) before touching `ct` or
-    // `pt_out`; every other pointer is a live buffer of the length passed with it.
+    // library to reject `ct_len > EKI_AEAD_MAX_LEN` (step 3 of "Validation order") before touching
+    // `ct` or `pt_out`; every other pointer is a live buffer of the length passed with it.
     let status = unsafe {
         eki_aead_open(
             c.alg,

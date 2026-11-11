@@ -1,7 +1,8 @@
 //! `eki_hkdf_sha256` through the C ABI.
 //!
-//! Vectors: RFC 5869 A.1–A.3 (the SHA-256 cases). Rows: plan §4.4 `hkdf`; the per-function
-//! sequence and the zero-on-error rule for variable-length outputs from §4.2.
+//! Vectors: RFC 5869 A.1–A.3 (the SHA-256 cases). Rows: `hkdf` of docs/ffi-contract.md
+//! ("Per-function contract"); the per-function sequence and the zero-on-error rule for
+//! variable-length outputs ("Outputs on error").
 
 mod common;
 
@@ -146,7 +147,7 @@ fn okm_len_zero_is_invalid() {
 fn okm_len_8161_is_invalid_and_leaves_okm_untouched() {
     let (status, okm) = a1(EKI_HKDF_MAX_OKM_LEN + 1);
     assert_eq!(status, EKI_ERR_INVALID_ARGUMENT);
-    // The length is outside its valid range, so the buffer is not touched (§4.2).
+    // The length is outside its valid range, so the buffer is not touched ("Outputs on error").
     assert_untouched(&okm);
 }
 

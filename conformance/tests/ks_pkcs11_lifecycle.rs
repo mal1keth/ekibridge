@@ -1,7 +1,7 @@
-//! Key lifecycle and dual control on the PKCS#11 backend (ABI 2 contract §3, §6, §8) against the
-//! SoftHSM2 token both libraries share: the state table, a state set through one library seen
-//! through the other, and dual control where a key disappears through another handle or a
-//! request outlives its handle.
+//! Key lifecycle and dual control on the PKCS#11 backend (docs/ffi-contract.md: "Key states",
+//! "Dual control", "PKCS#11 object mapping and lifecycle") against the SoftHSM2 token both
+//! libraries share: the state table, a state set through one library seen through the other, and
+//! dual control where a key disappears through another handle or a request outlives its handle.
 //!
 //! Needs `EKI_PKCS11_MODULE`, `EKI_PKCS11_TOKEN_LABEL` and `EKI_PKCS11_PIN`
 //! (`source scripts/softhsm-init.sh`); every test skips with a message otherwise. As in
@@ -10,10 +10,11 @@
 //! test creates is destroyed again through a handle without approvers, also when the scenario
 //! stops early, so the token is left as it was found.
 //!
-//! §8 also asks that the token itself refuse what the state forbids. Both libraries check the
-//! state before they call the token (§3), so no call through the ABI reaches the token with a
-//! forbidden operation; that half is not checkable here. What is checked is the consequence the
-//! ABI shows: the state lives in the token, so the other library reads it back.
+//! The contract also has the token itself refuse what the state forbids ("PKCS#11 object mapping
+//! and lifecycle"). Both libraries check the state before they call the token ("Key states"), so
+//! no call through the ABI reaches the token with a forbidden operation; that half is not
+//! checkable here. What is checked is the consequence the ABI shows: the state lives in the
+//! token, so the other library reads it back.
 
 mod common;
 
@@ -79,8 +80,9 @@ fn run_with_cleanup(
     });
 }
 
-/// The state table of §3 on the token, in each library: a plain handle (`eki_ks_open`) and a
-/// dual-control handle (`eki_ks_open_v2` with approvers in a software store) on the same token.
+/// The state table ("Key states") on the token, in each library: a plain handle (`eki_ks_open`)
+/// and a dual-control handle (`eki_ks_open_v2` with approvers in a software store) on the same
+/// token.
 #[test]
 fn state_table() {
     let Some((a, b, cfg, _guard)) = setup("ks_pkcs11_lifecycle::state_table") else {
@@ -100,7 +102,7 @@ fn state_table() {
     }
 }
 
-/// §8: keys retired or revoked through library x are RETIRED or REVOKED through library y on the
+/// Keys retired or revoked through library x are RETIRED or REVOKED through library y on the
 /// same token, y's operations obey those states, the new key of a rotation is ACTIVE with the old
 /// key's algorithm and label, and a key y revokes is REVOKED for x. Both directions.
 #[test]
@@ -337,9 +339,9 @@ fn cross_states(
     Ok(())
 }
 
-/// Dual control on the token (§6): a key destroyed through another handle while a request for it
-/// is pending ends that request with KEY_NOT_FOUND, and a request does not outlive its handle.
-/// Approver keys live in a software store of the other library.
+/// Dual control on the token ("Dual control"): a key destroyed through another handle while a
+/// request for it is pending ends that request with KEY_NOT_FOUND, and a request does not outlive
+/// its handle. Approver keys live in a software store of the other library.
 #[test]
 fn dual_control_on_the_token() {
     let Some((a, b, cfg, _guard)) = setup("ks_pkcs11_lifecycle::dual_control_on_the_token") else {

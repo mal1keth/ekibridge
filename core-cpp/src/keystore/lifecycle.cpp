@@ -1,7 +1,7 @@
-// The store operations that ABI version 2 adds (ABI 2 contract sections 3, 5 and 6): key lifecycle,
-// the audit head and verifier, and dual control of destroy. Each operation follows its contract
-// sequence top to bottom; the frame (store_internal.hpp) writes the audit record and undoes the
-// registered changes when the call does not succeed.
+// The store operations that ABI version 2 adds (docs/ffi-contract.md: "Key states", "Audit log",
+// "Dual control"): key lifecycle, the audit head and verifier, and dual control of destroy. Each
+// operation follows its contract sequence top to bottom; the frame (store_internal.hpp) writes the
+// audit record and undoes the registered changes when the call does not succeed.
 
 #include "store_internal.hpp"
 
@@ -59,7 +59,7 @@ std::uint32_t remaining_for(const dual_control::pending& request) noexcept {
 }
 
 // The approval that completes a request: the key is destroyed and the request removed. A key that
-// no longer exists is KEY_NOT_FOUND, and the request is removed all the same (section 6).
+// no longer exists is KEY_NOT_FOUND, and the request is removed all the same ("Dual control").
 eki_status complete_destroy(eki_ks& ks, call& current, const key_id& id,
                             std::uint32_t& remaining_out) {
   bool exists = false;
@@ -165,9 +165,9 @@ eki_status hmac_sha256_verify(eki_ks& ks, const key_id& id, bytes msg, bytes tag
   });
 }
 
-// Contract order: the handle has approvers (amendment 8: before any store check), the key exists,
-// then 32 fresh random bytes replace any earlier request for the key and its approvals
-// (amendment 7).
+// Contract order: the handle has approvers (checked before any store check), the key exists, then
+// 32 fresh random bytes replace any earlier request for the key and its approvals ("Dual
+// control").
 eki_status destroy_request(eki_ks& ks, const key_id& id, mut_bytes request_out) {
   return run_logged(ks, audit::op::destroy_request, [&](call& current) {
     current.record.key = id;
@@ -199,11 +199,11 @@ eki_status destroy_request(eki_ks& ks, const key_id& id, mut_bytes request_out) 
   });
 }
 
-// Contract order: the handle has approvers (amendment 8), the approver key is a valid point
-// (amendment 9), a pending request has these bytes, the key is one of the approvers, the
-// signature verifies over the approval message. Then the approval is recorded; the second
-// distinct approval destroys the key. Audit record: key is the id the request names, empty when
-// no request matched.
+// Contract order ("Per-function contract", dual control functions): the handle has approvers
+// (before any store check), the approver key is a valid point (before the request lookup), a
+// pending request has these bytes, the key is one of the approvers, the signature verifies over
+// the approval message. Then the approval is recorded; the second distinct approval destroys the
+// key. Audit record: key is the id the request names, empty when no request matched.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the order is the C ABI's
 eki_status destroy_approve(eki_ks& ks, bytes request, bytes approver_public_key, bytes sig,
                            std::uint32_t& remaining_out) {

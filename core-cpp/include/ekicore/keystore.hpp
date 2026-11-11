@@ -83,8 +83,8 @@ private:
   std::size_t size_ = 0;
 };
 
-// The lifecycle state of a key (ABI 2 contract section 3). The values are the ABI's. A key is
-// active when created; rotate makes the old key retired; revoke makes a key revoked.
+// The lifecycle state of a key (docs/ffi-contract.md, "Key states"). The values are the ABI's. A
+// key is active when created; rotate makes the old key retired; revoke makes a key revoked.
 enum class key_state : std::uint8_t {
   active = EKI_KEY_STATE_ACTIVE,
   retired = EKI_KEY_STATE_RETIRED,

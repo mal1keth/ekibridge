@@ -2,8 +2,9 @@
 // <ekicore.h> exactly as a C caller would; the C++ primitives themselves are tested directly in
 // primitives_*_test.cpp.
 //
-// Mirrors core-rs/tests/ffi_{hmac,hkdf,aead,ecdsa}.rs: the same vectors (plan §4.5) and the same
-// rows (plan §4.4), with validation order and zero-on-error from §4.2.
+// Mirrors core-rs/tests/ffi_{hmac,hkdf,aead,ecdsa}.rs: the same vectors and the same rows
+// (docs/ffi-contract.md, "Per-function contract"), with the validation order and the
+// zero-on-error rule of "Validation order" and "Outputs on error".
 
 #include "test_support.hpp"
 
@@ -170,7 +171,7 @@ TEST(FfiHmac, VerifyWrongMessageIsAuthFailed) {
             name(EKI_ERR_AUTH_FAILED));
 }
 
-// §4.4: `key_len 0` → INVALID_ARGUMENT, output zero-filled.
+// `key_len 0` → INVALID_ARGUMENT, output zero-filled.
 TEST(FfiHmac, KeyLenZeroIsInvalidAndZeroesOut) {
   const std::array<std::uint8_t, 1> dummy{0x0b};
   const auto msg = bytes("msg");
@@ -182,7 +183,7 @@ TEST(FfiHmac, KeyLenZeroIsInvalidAndZeroesOut) {
   }
 }
 
-// §4.4: `msg NULL, msg_len 0` → OK.
+// `msg NULL, msg_len 0` → OK.
 TEST(FfiHmac, MsgNullLenZeroIsOk) {
   const Bytes key = hex(kRfc4231.at(0).key);
   const Bytes expected = hex(kEmptyMsgMac);
@@ -207,12 +208,12 @@ TEST(FfiHmac, NullPointers) {
   EXPECT_TRUE(all_zero(out));
   EXPECT_EQ(name(eki_hmac_sha256(key.data(), key.size(), msg.data(), msg.size(), nullptr)),
             name(EKI_ERR_NULL_POINTER));
-  // NULL `out` is detected before `key_len 0` (§4.2 step 1 before step 3).
+  // NULL `out` is detected before `key_len 0` ("Validation order": step 1 before step 3).
   EXPECT_EQ(name(eki_hmac_sha256(nullptr, 0, msg.data(), msg.size(), nullptr)),
             name(EKI_ERR_NULL_POINTER));
 }
 
-// §4.4: `tag_len 31` / `tag NULL, tag_len 0` → INVALID_ARGUMENT.
+// `tag_len 31` / `tag NULL, tag_len 0` → INVALID_ARGUMENT.
 TEST(FfiHmac, VerifyTagLenNot32IsInvalid) {
   const Bytes key = hex(kRfc4231.at(0).key);
   const Bytes data = hex(kRfc4231.at(0).data);
@@ -338,7 +339,7 @@ TEST(FfiHkdf, Rfc5869Vectors) {
   }
 }
 
-// §4.4: `salt NULL,0`; `info NULL,0` → OK (A.3 has both empty).
+// `salt NULL,0`; `info NULL,0` → OK (A.3 has both empty).
 TEST(FfiHkdf, SaltAndInfoNullLenZeroAreOk) {
   const Bytes ikm = hex(kRfc5869.at(2).ikm);
   const Bytes expected = hex(kRfc5869.at(2).okm);
@@ -355,14 +356,14 @@ TEST(FfiHkdf, SaltAndInfoNullLenZeroAreOk) {
   }
 }
 
-// §4.4: `okm_len 8160` → OK; the A.1 output is its prefix.
+// `okm_len 8160` → OK; the A.1 output is its prefix.
 TEST(FfiHkdf, OkmLen8160IsOk) {
   Bytes okm = prefill(EKI_HKDF_MAX_OKM_LEN);
   EXPECT_EQ(name(hkdf_a1(okm)), name(EKI_OK));
   EXPECT_EQ(Bytes(okm.begin(), okm.begin() + 42), hex(kRfc5869.at(0).okm));
 }
 
-// §4.4: `okm_len 0` → INVALID_ARGUMENT.
+// `okm_len 0` → INVALID_ARGUMENT.
 TEST(FfiHkdf, OkmLenZeroIsInvalid) {
   Bytes okm;
   EXPECT_EQ(name(hkdf_a1(okm)), name(EKI_ERR_INVALID_ARGUMENT));
@@ -371,14 +372,14 @@ TEST(FfiHkdf, OkmLenZeroIsInvalid) {
             name(EKI_ERR_INVALID_ARGUMENT));
 }
 
-// §4.4: `okm_len 8161` → INVALID_ARGUMENT; out of range, so `okm` is untouched.
+// `okm_len 8161` → INVALID_ARGUMENT; out of range, so `okm` is untouched.
 TEST(FfiHkdf, OkmLen8161IsInvalidAndLeavesOkmUntouched) {
   Bytes okm = prefill(EKI_HKDF_MAX_OKM_LEN + 1);
   EXPECT_EQ(name(hkdf_a1(okm)), name(EKI_ERR_INVALID_ARGUMENT));
   EXPECT_TRUE(untouched(okm));
 }
 
-// §4.4: `ikm_len 0` → INVALID_ARGUMENT, okm zero-filled.
+// `ikm_len 0` → INVALID_ARGUMENT, okm zero-filled.
 TEST(FfiHkdf, IkmLenZeroIsInvalidAndZeroesOkm) {
   const std::array<std::uint8_t, 1> dummy{0x0b};
   for (const std::uint8_t* ikm : {static_cast<const std::uint8_t*>(nullptr), dummy.data()}) {
@@ -389,7 +390,7 @@ TEST(FfiHkdf, IkmLenZeroIsInvalidAndZeroesOkm) {
   }
 }
 
-// §4.4: `info_len 32769` (and the same cap on ikm and salt) → INVALID_ARGUMENT.
+// `info_len 32769` (and the same cap on ikm and salt) → INVALID_ARGUMENT.
 TEST(FfiHkdf, InputLengthsAbove32768AreInvalid) {
   const Bytes big(EKI_HKDF_MAX_INPUT_LEN + 1, 0x0b);
   const Bytes ikm = hex(kRfc5869.at(0).ikm);
@@ -648,7 +649,7 @@ TEST(FfiAead, VectorsOpen) {
   }
 }
 
-// §4.4: `alg 0`, `alg 3` → INVALID_ARGUMENT; outputs zero-filled.
+// `alg 0`, `alg 3` → INVALID_ARGUMENT; outputs zero-filled.
 TEST(FfiAead, SealUnknownAlgIsInvalid) {
   for (const eki_aead_alg alg : {0, 3, -1, 99, INT32_MIN, INT32_MAX}) {
     AeadCase c = gcm16();
@@ -661,7 +662,7 @@ TEST(FfiAead, SealUnknownAlgIsInvalid) {
   }
 }
 
-// §4.4: `key_len 16` → INVALID_ARGUMENT (also 0, 31, 33).
+// `key_len 16` → INVALID_ARGUMENT (also 0, 31, 33).
 TEST(FfiAead, SealKeyLenNot32IsInvalid) {
   for (const eki_aead_alg alg : {EKI_AEAD_AES_256_GCM, EKI_AEAD_CHACHA20_POLY1305}) {
     for (const std::size_t key_len : {std::size_t{0}, std::size_t{16}, std::size_t{31}}) {
@@ -689,7 +690,7 @@ TEST(FfiAead, SealKeyLenNot32IsInvalid) {
   }
 }
 
-// §4.4: `nonce_len 11/13` → INVALID_ARGUMENT.
+// `nonce_len 11/13` → INVALID_ARGUMENT.
 TEST(FfiAead, SealNonceLenNot12IsInvalid) {
   for (const eki_aead_alg alg : {EKI_AEAD_AES_256_GCM, EKI_AEAD_CHACHA20_POLY1305}) {
     for (const std::size_t nonce_len : {std::size_t{0}, std::size_t{11}, std::size_t{13}}) {
@@ -706,7 +707,7 @@ TEST(FfiAead, SealNonceLenNot12IsInvalid) {
   }
 }
 
-// §4.4: `pt NULL, pt_len 0, ct_out NULL`; `aad NULL,0` → OK (GCM test case 13).
+// `pt NULL, pt_len 0, ct_out NULL`; `aad NULL,0` → OK (GCM test case 13).
 TEST(FfiAead, SealEmptyPlaintextWithNullBuffersIsOk) {
   const AeadCase c = decode(kAeadVectors.at(2));
   Bytes tag = prefill(16);
@@ -716,7 +717,7 @@ TEST(FfiAead, SealEmptyPlaintextWithNullBuffersIsOk) {
   EXPECT_EQ(tag, c.tag);
 }
 
-// §4.4: `aad NULL,0` → OK (GCM test case 15 has no AAD).
+// `aad NULL,0` → OK (GCM test case 15 has no AAD).
 TEST(FfiAead, SealAadNullLenZeroIsOk) {
   const AeadCase c = decode(kAeadVectors.at(4));
   Bytes ct = prefill(c.pt.size());
@@ -728,7 +729,7 @@ TEST(FfiAead, SealAadNullLenZeroIsOk) {
   EXPECT_EQ(tag, c.tag);
 }
 
-// §4.4: `ct_out NULL, pt_len 1, alg 99` → NULL_POINTER (NULL before selector).
+// `ct_out NULL, pt_len 1, alg 99` → NULL_POINTER (NULL before selector).
 TEST(FfiAead, SealNullCtOutIsCheckedBeforeTheSelector) {
   const AeadCase c = gcm16();
   const std::array<std::uint8_t, 1> pt{0x42};
@@ -791,7 +792,7 @@ TEST(FfiAead, SealPtLenAboveMaxIsInvalid) {
   EXPECT_TRUE(all_zero(tag));
 }
 
-// §4.4: tag bit flipped → AUTH_FAILED, `pt_out` all zero.
+// tag bit flipped → AUTH_FAILED, `pt_out` all zero.
 TEST(FfiAead, OpenTagBitFlippedIsAuthFailed) {
   for (const AeadCase& c : {gcm16(), chacha282()}) {
     for (const std::size_t bit :
@@ -806,7 +807,7 @@ TEST(FfiAead, OpenTagBitFlippedIsAuthFailed) {
   }
 }
 
-// §4.4: aad changed → AUTH_FAILED, `pt_out` all zero.
+// aad changed → AUTH_FAILED, `pt_out` all zero.
 TEST(FfiAead, OpenAadChangedIsAuthFailed) {
   for (const AeadCase& c : {gcm16(), chacha282()}) {
     Bytes aad = c.aad;
@@ -821,7 +822,7 @@ TEST(FfiAead, OpenAadChangedIsAuthFailed) {
   }
 }
 
-// §4.4: ct truncated by 1 → AUTH_FAILED, `pt_out` all zero.
+// ct truncated by 1 → AUTH_FAILED, `pt_out` all zero.
 TEST(FfiAead, OpenCtTruncatedByOneIsAuthFailed) {
   for (const AeadCase& c : {gcm16(), chacha282()}) {
     const Bytes ct(c.ct.begin(), c.ct.end() - 1);
@@ -860,7 +861,7 @@ TEST(FfiAead, OpenWrongKeyOrNonceIsAuthFailed) {
   }
 }
 
-// §4.4: `ct_len 0` with the right tag → OK (GCM test case 13, NULL buffers).
+// `ct_len 0` with the right tag → OK (GCM test case 13, NULL buffers).
 TEST(FfiAead, OpenCtLenZeroWithTheRightTagIsOk) {
   const AeadCase c = decode(kAeadVectors.at(2));
   EXPECT_EQ(name(eki_aead_open(c.alg, c.key.data(), 32, c.nonce.data(), 12, nullptr, 0, nullptr, 0,
@@ -1047,7 +1048,7 @@ TEST(FfiEcdsa, Rfc6979Vectors) {
   EXPECT_EQ(name(verify(public_key(), "test", hex_array<64>(kSigTest))), name(EKI_OK));
 }
 
-// High-s signatures are accepted (§4.2).
+// High-s signatures are accepted ("Per-function contract" in docs/ffi-contract.md).
 TEST(FfiEcdsa, HighAndLowSBothVerify) {
   EXPECT_EQ(name(verify(public_key(), "sample", sig_of(kSigSampleR, kSigSampleOtherS))),
             name(EKI_OK));
@@ -1059,7 +1060,7 @@ TEST(FfiEcdsa, EmptyMessageWithNullPointer) {
   EXPECT_EQ(name(eki_ecdsa_p256_verify(pk.data(), nullptr, 0, sig.data())), name(EKI_OK));
 }
 
-// §4.4: `public_key[0] = 0x02` → INVALID_ARGUMENT.
+// `public_key[0] = 0x02` → INVALID_ARGUMENT.
 TEST(FfiEcdsa, PublicKeyPrefixNot04IsInvalid) {
   constexpr std::array<std::uint8_t, 7> kPrefixes{0x00, 0x02, 0x03, 0x05, 0x06, 0x07, 0xff};
   for (const std::uint8_t prefix : kPrefixes) {
@@ -1070,7 +1071,7 @@ TEST(FfiEcdsa, PublicKeyPrefixNot04IsInvalid) {
   }
 }
 
-// §4.4: off-curve point → INVALID_ARGUMENT.
+// off-curve point → INVALID_ARGUMENT.
 TEST(FfiEcdsa, OffCurvePointIsInvalid) {
   PublicKey pk = public_key();
   pk.at(64) = static_cast<std::uint8_t>(pk.at(64) ^ 0x01U); // y - 1: not on the curve
@@ -1104,7 +1105,7 @@ TEST(FfiEcdsa, CoordinateNotBelowPIsInvalid) {
       << "x = p, the y of (0, y)";
 }
 
-// §4.4: `r = 0`; `s = n` → AUTH_FAILED (also s = 0, r = n, 2^256 - 1).
+// `r = 0`; `s = n` → AUTH_FAILED (also s = 0, r = n, 2^256 - 1).
 TEST(FfiEcdsa, ROrSOutOfRangeIsAuthFailed) {
   constexpr std::string_view kZero =
       "0000000000000000000000000000000000000000000000000000000000000000";
@@ -1125,7 +1126,7 @@ TEST(FfiEcdsa, ROrSOutOfRangeIsAuthFailed) {
       << "s = 2^256 - 1";
 }
 
-// §4.4: signature over another message → AUTH_FAILED.
+// signature over another message → AUTH_FAILED.
 TEST(FfiEcdsa, SignatureOverOtherMessageIsAuthFailed) {
   const PublicKey pk = public_key();
   const Signature sig = sig_sample();

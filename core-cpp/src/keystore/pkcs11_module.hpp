@@ -1,9 +1,9 @@
 #pragma once
 
-// The process-wide side of the PKCS#11 backend (plan 4.3, "PKCS#11 lifecycle"): loading a module,
-// initialising it, and finalising it when the last handle that uses it closes. C_Initialize and
-// the login state belong to the whole process, not to one handle, so they are managed here once
-// per module path; each handle holds a module_lease and its own session.
+// The process-wide side of the PKCS#11 backend (docs/threat-model.md, "PKCS#11 specifics"):
+// loading a module, initialising it, and finalising it when the last handle that uses it closes.
+// C_Initialize and the login state belong to the whole process, not to one handle, so they are
+// managed here once per module path; each handle holds a module_lease and its own session.
 //
 // Also the CKR_* names that every BACKEND message carries.
 

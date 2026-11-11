@@ -1,11 +1,11 @@
-//! The audit log (ABI 2 contract §5, §7, §8) on the software backend of both libraries: the
-//! byte-exact record format, what is logged, `eki_ks_audit_head`, `eki_audit_verify`, a log
+//! The audit log (docs/ffi-contract.md, "Audit log") on the software backend of both libraries:
+//! the byte-exact record format, what is logged, `eki_ks_audit_head`, `eki_audit_verify`, a log
 //! written by one library verified and continued by the other, tampering, and the
 //! `eki_ks_open_v2` rows that need a file.
 //!
 //! The harness parses every record and checks its shape, its fields, the chaining of `prev` to
-//! the previous `hash` and the hash itself (SHA-256, contract section 10, amendment 14). With the
-//! same hash it forges chains whose hashes are all correct around one record that breaks another
+//! the previous `hash` and the hash itself (SHA-256, recomputed here with `sha2`). With the same
+//! hash it forges chains whose hashes are all correct around one record that breaks another
 //! rule, so that only that rule can reject them.
 //!
 //! Log files are named after the role of the library (`cpp` for `EKI_CPP_LIB`, `rs` for
@@ -16,6 +16,7 @@ mod common;
 
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use common::ks::{self, Flow, run};
 use common::lifecycle::{Approvers, audit_head, open_v2};
@@ -28,7 +29,7 @@ use ekicore_conformance::{
 };
 use sha2::{Digest, Sha256};
 
-/// Every `op` value of §5.
+/// Every `op` value ("Record format" in docs/ffi-contract.md).
 const OPS: [&str; 14] = [
     "open",
     "close",
@@ -101,6 +102,46 @@ fn read(path: &Path) -> Flow<Vec<u8>> {
 fn write(path: &Path, bytes: &[u8]) {
     std::fs::write(path, bytes)
         .unwrap_or_else(|e| panic!("harness: cannot write {}: {e}", path.display()));
+}
+
+#[cfg(target_vendor = "apple")]
+type Mode = u16;
+#[cfg(not(target_vendor = "apple"))]
+type Mode = u32;
+
+unsafe extern "C" {
+    /// `mkfifo(3)`: the standard library cannot create a FIFO, and a child process is not an
+    /// option because a process spawned while another test holds a log lock keeps that lock
+    /// until it executes its program.
+    fn mkfifo(path: *const std::ffi::c_char, mode: Mode) -> std::ffi::c_int;
+}
+
+/// Creates a FIFO at `path`.
+fn make_fifo(path: &Path) {
+    let text = c_path(path);
+    // SAFETY: `text` is a live NUL-terminated string that `mkfifo` only reads.
+    let made = unsafe { mkfifo(text.as_ptr(), 0o600) };
+    assert!(
+        made == 0,
+        "harness: mkfifo {}: {}",
+        path.display(),
+        std::io::Error::last_os_error()
+    );
+}
+
+/// Runs `f` on another thread and waits up to ten seconds for its result, so that a library that
+/// waits for the writer of a FIFO fails the scenario instead of hanging the run.
+fn within_ten_seconds<T: Send + 'static>(
+    what: &str,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> Flow<T> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(f());
+    });
+    receiver.recv_timeout(Duration::from_secs(10)).map_err(|_| {
+        format!("{what}: no answer within 10 seconds (does the call wait for a FIFO's writer?)")
+    })
 }
 
 /// `eki_audit_verify(path, expected_head)`: the status and `records_out`.
@@ -285,7 +326,7 @@ fn now_seconds() -> i64 {
         .map_or(0, |d| d.as_secs() as i64)
 }
 
-/// The part of a line that its hash covers: everything before `,"hash":` (§5).
+/// The part of a line that its hash covers: everything before `,"hash":`.
 fn covered(line: &str) -> &str {
     line.rfind(",\"hash\":").map_or(line, |end| &line[..end])
 }
@@ -295,7 +336,7 @@ fn record_hash(covered: &str) -> String {
     hex::encode(Sha256::digest(covered.as_bytes()))
 }
 
-/// Parses one line (without its `\n`) with the exact shape of §5.
+/// Parses one line (without its `\n`) with the exact shape of the record format.
 fn parse_record(line: &str) -> Result<Record, String> {
     let mut rest = line;
     take(&mut rest, "{\"seq\":")?;
@@ -322,7 +363,7 @@ fn parse_record(line: &str) -> Result<Record, String> {
         return Err(format!("time {time:?} is not YYYY-MM-DDTHH:MM:SSZ"));
     }
     if !OPS.contains(&op.as_str()) {
-        return Err(format!("op {op:?} is not one of §5"));
+        return Err(format!("op {op:?} is not one of the 14 op names"));
     }
     for (name, value) in [("key", &key), ("key2", &key2)] {
         if !(value.is_empty() || is_lower_hex(value, 32)) {
@@ -351,9 +392,9 @@ fn parse_record(line: &str) -> Result<Record, String> {
     })
 }
 
-/// Parses a whole log and checks it as §5 describes: every line has the shape of §5, a correct
-/// `hash` and at most 512 bytes, `seq` runs from 1, `prev` is the previous `hash` (64 zeros
-/// first), and the file ends with `\n`.
+/// Parses a whole log and checks it as "Verification" in docs/ffi-contract.md describes: every
+/// line has the record shape, a correct `hash` and at most 512 bytes, `seq` runs from 1, `prev` is
+/// the previous `hash` (64 zeros first), and the file ends with `\n`.
 fn parse_log(bytes: &[u8]) -> Result<Vec<Record>, String> {
     let text = std::str::from_utf8(bytes).map_err(|e| format!("not UTF-8: {e}"))?;
     if text.is_empty() {
@@ -473,7 +514,7 @@ fn not_logged(r: &mut Report, st: &Store, script: &Script, what: &str) -> Flow<(
     Ok(())
 }
 
-/// The full scripted sequence: every op of §5, failed calls, calls that are not logged, and dual
+/// The full scripted sequence: every op, failed calls, calls that are not logged, and dual
 /// control with approvers held in `ap`. The handle is closed at the end.
 fn write_full_log(r: &mut Report, lib: &Lib, ap: &Approvers, path: &Path) -> Flow<Script> {
     let cfg = KsConfigV2::software()
@@ -681,11 +722,12 @@ fn write_short_log(lib: &Lib, path: &Path) -> Flow<Vec<Expected>> {
 // Tests
 // ---------------------------------------------------------------------------------------------
 
-/// The scripted log of each library is byte-exact (§5), records exactly the calls §5 names, and
-/// is accepted by both libraries' `eki_audit_verify` with the same record count. Each head that
-/// `eki_ks_audit_head` reported equals the hash of that record in the file, and the other library
-/// accepts the log cut after that record with that head as `expected_head` (§8: A's head equals
-/// what B computes). Approvals are signed by the other library.
+/// The scripted log of each library is byte-exact, records exactly the calls that the "Audit log"
+/// section of docs/ffi-contract.md names, and is accepted by both libraries' `eki_audit_verify`
+/// with the same record count. Each head that `eki_ks_audit_head` reported equals the hash of that
+/// record in the file, and the other library accepts the log cut after that record with that head
+/// as `expected_head` (the head of one library equals what the other computes). Approvals are
+/// signed by the other library.
 #[test]
 fn scripted_log_is_exact_and_verifies_in_both() {
     let Some((a, b)) = common::setup("audit::scripted_log_is_exact_and_verifies_in_both") else {
@@ -760,9 +802,10 @@ fn scripted_log_is_exact_and_verifies_in_both() {
     });
 }
 
-/// §8: library x writes a log and closes it; y verifies it, opens the same file with
+/// Library x writes a log and closes it; y verifies it, opens the same file with
 /// `eki_ks_open_v2`, appends and closes; x verifies the whole file, then continues it once more,
-/// and y verifies again. The chain crosses the libraries without a break.
+/// and y verifies again. The chain crosses the libraries without a break ("Verification" in
+/// docs/ffi-contract.md).
 #[test]
 fn log_continued_by_the_other_library() {
     let Some((a, b)) = common::setup("audit::log_continued_by_the_other_library") else {
@@ -812,8 +855,8 @@ fn log_continued_by_the_other_library() {
     });
 }
 
-/// The `eki_audit_verify` rows of §5 and §7 that need no tampering: NULL, path length, missing
-/// file, empty file, and `expected_head`.
+/// The `eki_audit_verify` rows that need no tampering ("Audit functions" in docs/ffi-contract.md):
+/// NULL, path length, missing file, empty file, and `expected_head`.
 #[test]
 fn verify_error_matrix() {
     let Some((a, b)) = common::setup("audit::verify_error_matrix") else {
@@ -880,9 +923,9 @@ fn verify_error_matrix() {
     });
 }
 
-/// §5 and §7 tampering rows, for logs written by each library and checked by both: every single
-/// byte changed, a line removed from the middle, the last `\n` removed, the tail removed with
-/// and without `expected_head`, and a few malformed endings.
+/// The tampering rows ("Verification" in docs/ffi-contract.md), for logs written by each library
+/// and checked by both: every single byte changed, a line removed from the middle, the last `\n`
+/// removed, the tail removed with and without `expected_head`, and a few malformed endings.
 #[test]
 fn tampering_is_detected_by_both() {
     let Some((a, b)) = common::setup("audit::tampering_is_detected_by_both") else {
@@ -1029,11 +1072,12 @@ fn tampering_is_detected_by_both() {
     });
 }
 
-/// Contract section 10, amendments 14 and 15: chains whose every `prev` and `hash` is correct,
-/// around one record that breaks another rule of §5 (a wrong `seq`, an over-long line, a status
-/// outside 0..=12, an unknown `op`, a `time` that names no UTC second), fail verification in both
-/// libraries. Rows with an unusual but valid value pass, and the unchanged fields rebuild the
-/// log byte for byte, which shows that the harness forges the chain as the libraries hash it.
+/// Chains whose every `prev` and `hash` is correct, around one record that breaks another rule of
+/// the record format ("Record format" and "Verification" in docs/ffi-contract.md: a wrong `seq`,
+/// an over-long line, a status outside 0..=12, an unknown `op`, a `time` that names no UTC
+/// second), fail verification in both libraries. Rows with an unusual but valid value pass, and
+/// the unchanged fields rebuild the log byte for byte, which shows that the harness forges the
+/// chain as the libraries hash it.
 #[test]
 fn forged_chains_with_correct_hashes() {
     let Some((a, b)) = common::setup("audit::forged_chains_with_correct_hashes") else {
@@ -1148,7 +1192,7 @@ impl Fields {
     }
 }
 
-/// The log of `records` in the byte-exact form of §5, chained from 64 zeros with the `prev` and
+/// The log of `records` in the byte-exact record format, chained from 64 zeros with the `prev` and
 /// `hash` each line needs.
 fn chain(records: &[Fields]) -> Vec<u8> {
     let mut prev = ZERO_HASH.to_owned();
@@ -1166,9 +1210,10 @@ fn chain(records: &[Fields]) -> Vec<u8> {
     out.into_bytes()
 }
 
-/// The `eki_ks_open_v2` rows that need a file (§4, §5, §7), and `eki_ks_audit_head` without a
-/// log: a log with a flipped byte, a log locked by an open handle of either library, a log in a
-/// directory that does not exist, an empty existing file.
+/// The `eki_ks_open_v2` rows that need a file ("Opening a store with ABI 2" in
+/// docs/ffi-contract.md), and `eki_ks_audit_head` without a log: a log with a flipped byte, a log
+/// locked by an open handle of either library, a log in a directory that does not exist, an empty
+/// existing file.
 #[test]
 fn open_v2_audit_rows() {
     let Some((a, b)) = common::setup("audit::open_v2_audit_rows") else {
@@ -1282,6 +1327,75 @@ fn open_v2_audit_rows() {
     });
 }
 
+/// A log must be a regular file ("Writing" in docs/ffi-contract.md): a directory, a device and a
+/// FIFO are BACKEND for `eki_audit_verify` and for `eki_ks_open_v2` (no handle), in both
+/// libraries, and neither call waits for the writer of the FIFO. A symbolic link to a log is
+/// followed.
+#[test]
+fn a_log_must_be_a_regular_file() {
+    let Some((a, b)) = common::setup("audit::a_log_must_be_a_regular_file") else {
+        return;
+    };
+    run("audit::a_log_must_be_a_regular_file", |r| {
+        let dir = TempDir::new("special");
+        let fifo = dir.file("fifo");
+        make_fifo(&fifo);
+        let special = [
+            ("a directory", dir.0.clone()),
+            ("/dev/null", PathBuf::from("/dev/null")),
+            ("a FIFO", fifo),
+        ];
+        for lib in [a, b] {
+            for (row, path) in &special {
+                let (status, records) = {
+                    let path = path.clone();
+                    within_ten_seconds(row, move || verify(lib, &path, None))?
+                };
+                let row_verify = format!("verify, {row}");
+                if r.status(lib, &row_verify, status, EKI_ERR_BACKEND) {
+                    r.check(records == 0, || {
+                        format!("{}: {row_verify}: records_out = {records:#x}", lib.name())
+                    });
+                }
+                let (status, no_handle) = {
+                    let path = path.clone();
+                    within_ten_seconds(row, move || {
+                        let cfg = KsConfigV2::software().with_audit_log(&path);
+                        let (status, store) = lib.ks_open_v2(&cfg);
+                        (status, store.is_none())
+                    })?
+                };
+                let row_open = format!("open_v2, log is {row}");
+                r.status(lib, &row_open, status, EKI_ERR_BACKEND);
+                r.check(no_handle, || {
+                    format!("{}: {row_open}: a handle was returned", lib.name())
+                });
+            }
+
+            // A symbolic link leads to a regular file: verified, and continued by an open.
+            let target = dir.file(&format!("{}-target.log", role(lib)));
+            let n = write_short_log(lib, &target)?.len() as u64;
+            let link = dir.file(&format!("{}-link.log", role(lib)));
+            std::os::unix::fs::symlink(&target, &link)
+                .map_err(|e| format!("harness: cannot link {}: {e}", link.display()))?;
+            for checker in [a, b] {
+                verify_ok(r, checker, "verify, symbolic link to a log", &link, None, n);
+            }
+            let st = open_v2(lib, &KsConfigV2::software().with_audit_log(&link))?;
+            drop(st);
+            verify_ok(
+                r,
+                lib,
+                "the log after an open through a link",
+                &target,
+                None,
+                n + 2,
+            );
+        }
+        Ok(())
+    });
+}
+
 /// (row, file content, expected_head, expected status, expected records_out)
 type Variant = (String, Vec<u8>, Option<[u8; 32]>, i32, u64);
 
@@ -1294,7 +1408,7 @@ fn prefix_lines(bytes: &[u8], n: usize) -> Vec<u8> {
         .collect()
 }
 
-/// A log created by the library has mode 0600 (§5).
+/// A log created by the library has mode 0600 ("Writing" in docs/ffi-contract.md).
 fn check_mode_0600(r: &mut Report, lib: &Lib, path: &Path) {
     use std::os::unix::fs::PermissionsExt;
     match std::fs::metadata(path) {

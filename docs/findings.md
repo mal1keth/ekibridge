@@ -31,7 +31,7 @@ scratch directory, with `-runs=200000`. Software key store only; no PKCS#11 toke
 | 2026-11-11 | Rust `aead_open` | 200000 | 1209 (872) | clean | |
 | 2026-11-11 | C++ `fuzz_ffi_status`, PQ build | 200000 | 4243 (3336) | clean | 83 s. |
 | 2026-11-11 | C++ `fuzz_hybrid_kem`, PQ build | 200000 | 369 (357) | clean | |
-| 2026-11-11 | C++ `fuzz_ffi_status` | 200000 | 4138 (3276) | clean | 103 s. The C++ library flushes audit records with `fsync`, which on macOS does not flush the drive cache, hence the difference in speed from Rust. |
+| 2026-11-11 | C++ `fuzz_ffi_status` | 200000 | 4138 (3276) | clean | 103 s. At the time of this run the C++ library flushed audit records with `fsync`, which on macOS does not flush the drive cache, hence the difference in speed from Rust; it has used `F_FULLFSYNC` there since. |
 | 2026-11-11 | C++ `fuzz_ks_unwrap` | 200000 | 1900 (1757) | clean | |
 | 2026-11-11 | C++ `fuzz_ecdsa_sign_verify` | 200000 | 556 (543) | clean | |
 | 2026-11-11 | C++ `fuzz_hybrid_kem` | 200000 | 236 (229) | clean | KEM not compiled in: every call checked to be `EKI_ERR_UNSUPPORTED` with zeroed outputs. |

@@ -282,12 +282,14 @@ target with a two-minute limit per target on each push, which is a smoke test, n
   different configured keys signed the request; whoever holds two approver private keys can
   destroy any key alone. The approver keys are fixed when the handle opens and are trusted as
   given.
-- **Durability on macOS.** The C++ library flushes records with `fsync`, which on macOS does not
-  flush the drive's write cache; the Rust library uses `sync_data`, which on Apple platforms uses
-  `F_FULLFSYNC`. A power loss on macOS can lose the last records written by the C++ library. The
-  difference is visible in fuzzing throughput: the C++ `ffi_status` target completed 200000
-  executions in 103 s, while the Rust one, which flushes a record per logged call the same way,
-  ran at about 200 executions per second on an idle machine ([findings.md](findings.md)).
+- **Durability on macOS.** `fsync` on macOS does not flush the drive's write cache, so both
+  libraries flush each audit record with `F_FULLFSYNC` there: the Rust library through
+  `sync_data`, the C++ library through `fcntl(F_FULLFSYNC)`, falling back to `fsync` on a file
+  system that rejects it (on such a file system a power loss can still lose the last records
+  written by the C++ library; the Rust library fails the write instead). The cost is visible in
+  fuzzing throughput: the Rust `ffi_status` target ran at about 200 executions per second on an
+  idle machine, because it flushes a record per logged call ([findings.md](findings.md)); the
+  campaign of 2026-11-11 ran the C++ target, then still on `fsync`, at 200000 executions in 103 s.
 - **Timing.** ECDSA verification and everything else applied to public data runs in variable
   time; no constant-time property of the providers is measured here.
 - **The software store is not persistent.** Keys live in memory for the lifetime of the handle and

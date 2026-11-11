@@ -7,13 +7,14 @@
 //!    which holds the backend, the last-error text, the dual-control state and the audit log.
 //!    One lock serialises every operation on a handle.
 //! 2. [`Store`] is the logic shared by all backends. Each method is one `eki_ks_*` function and
-//!    runs the per-function sequence of the ABI contract (plan 4.2, ABI 2 contract section 3):
-//!    selector and format checks, then the store-state checks in their fixed order (existence,
-//!    type, lifecycle state, dual control), and only then the backend operation. It decides
-//!    every status that follows from caller input or store state (`INVALID_ARGUMENT`,
-//!    `KEY_NOT_FOUND`, `WRONG_KEY_TYPE`, `KEY_EXISTS`, `KEY_STATE`, `APPROVAL_REQUIRED`) and
-//!    records a non-empty message for every backend failure. Every logged operation runs inside
-//!    [`Store::audited`], which writes its audit record with the final status.
+//!    runs the per-function sequence of docs/ffi-contract.md ("Validation order", "Per-function
+//!    contract" and "Key states"): selector and format checks, then the store-state checks in
+//!    their fixed order (existence, type, lifecycle state, dual control), and only then the
+//!    backend operation. It decides every status that follows from caller input or store state
+//!    (`INVALID_ARGUMENT`, `KEY_NOT_FOUND`, `WRONG_KEY_TYPE`, `KEY_EXISTS`, `KEY_STATE`,
+//!    `APPROVAL_REQUIRED`) and records a non-empty message for every backend failure. Every
+//!    logged operation runs inside [`Store::audited`], which writes its audit record with the
+//!    final status.
 //! 3. [`Backend`] is what differs per backend: find a key's algorithm, label and state, create,
 //!    public key, sign, HMAC, verify an HMAC tag, wrap, unwrap-and-store, set the state,
 //!    destroy. A backend reports only success, a failure with text, an authentication failure
@@ -110,8 +111,8 @@ impl KeyAlg {
     }
 }
 
-/// The lifecycle state of a stored key (ABI 2 contract section 3). The order is the order of
-/// the transitions: a key only ever moves to a later state.
+/// The lifecycle state of a stored key (docs/ffi-contract.md, "Key states"). The order is the
+/// order of the transitions: a key only ever moves to a later state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum KeyState {
     /// Generated or unwrapped; every operation of the algorithm is allowed.
@@ -262,10 +263,11 @@ pub enum Found {
     /// A key this library can describe.
     Key(KeyInfo),
     /// An object that carries the id but is not a key this library can describe: a PKCS#11
-    /// object of another shape, one whose label is not a valid label (plan 4.3), or one whose
-    /// usage attributes form none of the three states (ABI 2 contract section 3). It counts as
-    /// existing (`KEY_EXISTS` on unwrap, destroyable); an operation that needs its algorithm,
-    /// label or state fails as a backend failure. The software backend never reports it.
+    /// object of another shape, or one whose label is not a valid label, or one whose usage
+    /// attributes form none of the three states (docs/ffi-contract.md, "Foreign objects"). It
+    /// counts as existing (`KEY_EXISTS` on unwrap, destroyable); an operation that needs its
+    /// algorithm, label or state fails as a backend failure. The software backend never reports
+    /// it.
     Foreign,
 }
 
@@ -436,8 +438,9 @@ impl Handle {
     }
 
     /// Starts an operation on the handle: takes the lock and resets the last-error message to
-    /// `""`, as every store call except `last_error_message` and `close` does on entry (plan 4.2,
-    /// "Last error"). The guard keeps the handle locked until the operation ends.
+    /// `""`, as every store call except `last_error_message` and `close` does on entry
+    /// (docs/ffi-contract.md, "Last error message"). The guard keeps the handle locked until the
+    /// operation ends.
     pub fn begin(&self) -> MutexGuard<'_, Store> {
         let mut store = self.lock();
         store.last_error.clear();
@@ -447,8 +450,8 @@ impl Handle {
     /// Takes the lock without starting an operation, for reading the last-error message.
     ///
     /// A panic while the lock is held poisons the mutex. The lock is recovered instead of the
-    /// poison being propagated (plan 4.2, step 7), and that is sound because no panic can leave
-    /// the store inconsistent:
+    /// poison being propagated ("Thread safety" in docs/ffi-contract.md), and that is sound
+    /// because no panic can leave the store inconsistent:
     ///
     /// - `last_error` only ever changes by `clear` or by a move of a finished `String`, neither
     ///   of which can panic midway, so it holds `""` or a complete message. The next operation
@@ -566,7 +569,8 @@ impl BackendConfig {
 
     /// Opens the backend. For PKCS#11: load, initialise, slot, session and login, where every
     /// failure is `EKI_ERR_BACKEND`. There is no handle yet to carry a message, so the reason is
-    /// dropped and only the status is reported (plan 4.2, "Last error").
+    /// dropped and only the status is reported ("Opening a store with ABI 2" in
+    /// docs/ffi-contract.md).
     fn open(self) -> Result<Box<dyn Backend>, Error> {
         match self {
             Self::Software => Ok(Box::new(software::Software::new())),
@@ -677,8 +681,8 @@ impl Entry {
 /// and the audit log, and the logic every backend shares.
 ///
 /// The methods run with the lock held, inside an operation started by [`Handle::begin`]. Each
-/// one follows its sequence in plan 4.2 and the ABI 2 contract from top to bottom; the first
-/// failing step decides the error.
+/// one follows its sequence in docs/ffi-contract.md ("Validation order" and "Per-function
+/// contract") from top to bottom; the first failing step decides the error.
 pub struct Store {
     backend: Box<dyn Backend>,
     last_error: String,
@@ -987,7 +991,7 @@ impl Store {
     }
 
     /// The algorithm, label and state of an object that exists: an object this library cannot
-    /// describe is a backend failure (plan 4.3).
+    /// describe is a backend failure ("Foreign objects" in docs/ffi-contract.md).
     fn described(&mut self, found: Found) -> Result<KeyInfo, Error> {
         match found {
             Found::Key(info) => Ok(info),

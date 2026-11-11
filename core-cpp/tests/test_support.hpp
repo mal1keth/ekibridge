@@ -179,7 +179,7 @@ inline std::span<const std::uint8_t> label_bytes(const eki_key_info& info) {
   return {reinterpret_cast<const std::uint8_t*>(std::begin(info.label)), sizeof(info.label)};
 }
 
-// The fields of a key info are zero (padding bytes are unspecified, §4.2).
+// The fields of a key info are zero (padding bytes are unspecified: "Outputs on error").
 inline testing::AssertionResult info_zero(const eki_key_info& info) {
   if (info.alg != 0) {
     return testing::AssertionFailure() << "info_out.alg not zeroed: " << info.alg;
@@ -393,8 +393,9 @@ inline std::optional<std::string> last_error(const eki_ks* ks) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Key store scenarios shared by the software and PKCS#11 suites (plan §4.2, §4.4). Each takes an
-// open Store; backend-specific rows live in the test files. Mirrors core-rs/tests/common/ks.rs.
+// Key store scenarios shared by the software and PKCS#11 suites (the rules and failure rows of
+// docs/ffi-contract.md). Each takes an open Store; backend-specific rows live in the test files.
+// Mirrors core-rs/tests/common/ks.rs.
 // ---------------------------------------------------------------------------------------------
 
 // The scenarios are long row tables; their complexity is the macros, not branching logic.
@@ -442,7 +443,8 @@ inline void lifecycle(Store& store) {
   ASSERT_TRUE(store.hmac(mac2, bytes("message"), t2));
   EXPECT_NE(t1, t2);
 
-  // Sign, then verify with the stateless function (never compare signature bytes, plan §2).
+  // Sign, then verify with the stateless function (signature bytes are never compared: "Known
+  // limitations" in docs/ffi-contract.md).
   PublicKey pk{};
   PublicKey pk2{};
   ASSERT_TRUE(store.public_key(ec, pk));
@@ -505,7 +507,7 @@ inline void wrap_unwrap_round_trip(Store& store) {
   ASSERT_TRUE(store.wrap(aes_copy, mac, again));
   EXPECT_EQ(blob, again);
 
-  // Self-wrap is allowed (§4.4: kek_id == key_id (AES) → OK).
+  // Self-wrap is allowed (kek_id == key_id (AES) → OK).
   ASSERT_TRUE(store.wrap(kek, kek, blob));
 
   // Destroying the copy leaves the original.
@@ -514,7 +516,7 @@ inline void wrap_unwrap_round_trip(Store& store) {
   EXPECT_TRUE(info_is(info, EKI_KEY_HMAC_SHA256, "eki-test hmac"));
 }
 
-// §4.4 ks_generate rows and the label rules of §4.2.
+// ks_generate rows and the label rules ("Labels" in docs/ffi-contract.md).
 inline void generate_rows(Store& store) {
   eki_ks* ks = store.get();
   for (const eki_key_alg alg : {0, 4, -1, INT32_MIN, INT32_MAX}) {
@@ -592,7 +594,7 @@ inline void generate_null_rows(Store& store) {
   EXPECT_EQ(name(eki_ks_generate(ks, 0, "", &id)), name(EKI_ERR_INVALID_ARGUMENT));
 }
 
-// §4.4 rows for get_info, destroy, get_public_key, sign and ks_hmac.
+// Rows for get_info, destroy, get_public_key, sign and ks_hmac.
 inline void lookup_rows(Store& store) {
   eki_ks* ks = store.get();
   const eki_key_id unknown = unknown_id();
@@ -724,7 +726,7 @@ inline void lookup_null_rows(Store& store) {
       << "before type";
 }
 
-// §4.4 ks_wrap rows, including the multi-fault rows that pin the check order
+// ks_wrap rows, including the multi-fault rows that pin the check order
 // (kek exists → key exists → kek is AES → key is AES or HMAC).
 inline void wrap_rows(Store& store) {
   eki_ks* ks = store.get();
@@ -818,7 +820,7 @@ inline void wrap_rows(Store& store) {
   EXPECT_EQ(name(eki_ks_wrap(ks, &unknown, &unknown, nullptr)), name(EKI_ERR_NULL_POINTER));
 }
 
-// §4.4 ks_unwrap rows, including the multi-fault rows that pin the check order
+// ks_unwrap rows, including the multi-fault rows that pin the check order
 // (alg → blob_len → not ECDSA → label → kek exists → kek is AES → id free → integrity).
 inline void unwrap_rows(Store& store) {
   eki_ks* ks = store.get();
@@ -1098,7 +1100,7 @@ inline void unwrap_rows(Store& store) {
   EXPECT_EQ(a, b);
 }
 
-// eki_ks_last_error_message conventions (§4.2 "Last error").
+// eki_ks_last_error_message conventions ("Last error message" in docs/ffi-contract.md).
 inline void last_error_rows(Store& store) {
   eki_ks* ks = store.get();
   const auto as_bytes = [](const auto& buf) {

@@ -1,6 +1,7 @@
-//! `eki_ecdsa_p256_verify`: RFC 6979 and Wycheproof vectors, the §4.4 rows, and a seeded
-//! differential over mutated vectors. Signing is checked in the key-store modules, by
-//! cross-verification only (signatures are not deterministic in every backend).
+//! `eki_ecdsa_p256_verify`: RFC 6979 and Wycheproof vectors, the failure rows of
+//! docs/ffi-contract.md ("Per-function contract"), and a seeded differential over mutated
+//! vectors. Signing is checked in the key-store modules, by cross-verification only (signatures
+//! are not deterministic in every backend).
 
 mod common;
 

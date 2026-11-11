@@ -1,5 +1,5 @@
-//! Metadata functions: `eki_abi_version`, `eki_version`, `eki_status_name` (plan §4.1, §4.2
-//! "Versions", §4.4 `status_name` row). These are implemented already, so nothing is ignored.
+//! Metadata functions: `eki_abi_version`, `eki_version`, `eki_status_name` (docs/ffi-contract.md,
+//! "Metadata" and "Status codes"). These are implemented already, so nothing is ignored.
 
 use core::ffi::{CStr, c_char};
 

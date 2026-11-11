@@ -1,5 +1,6 @@
-//! Software key store (`EKI_KS_SOFTWARE`) in both libraries: `eki_ks_open` rows, the store rows
-//! of the §4.4 matrix, `get_info` parity, ECDSA cross-verification and handle independence.
+//! Software key store (`EKI_KS_SOFTWARE`) in both libraries: `eki_ks_open` rows, the store rows of
+//! docs/ffi-contract.md ("Per-function contract"), `get_info` parity, ECDSA cross-verification and
+//! handle independence.
 //!
 //! Two software stores never share key material and the ABI has no import of a raw key, so a
 //! key cannot be unwrapped in the other library's software store: the wrap → unwrap → `ks_hmac`

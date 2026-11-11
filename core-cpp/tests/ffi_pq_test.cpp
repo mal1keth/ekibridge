@@ -1,7 +1,7 @@
-// Hybrid X25519 + ML-KEM-768 KEM through the C ABI. Mirrors core-rs/tests/ffi_pq.rs: plan §4.4
-// hybrid rows and the KEM sequence of §4.2 (NULL checks, then UNSUPPORTED when not compiled in,
-// then the all-zero X25519 and ML-KEM key checks; decapsulation never fails). Which half runs
-// depends on EKI_WITH_PQ (eki_test::kWithPq); the other half skips.
+// Hybrid X25519 + ML-KEM-768 KEM through the C ABI. Mirrors core-rs/tests/ffi_pq.rs: the hybrid
+// rows of docs/ffi-contract.md ("Hybrid KEM (optional)") and its sequence (NULL checks, then
+// UNSUPPORTED when not compiled in, then the all-zero X25519 and ML-KEM key checks; decapsulation
+// never fails). Which half runs depends on EKI_WITH_PQ (eki_test::kWithPq); the other half skips.
 
 #include "test_support.hpp"
 
@@ -62,7 +62,7 @@ TEST(FfiPq, NullPointers) {
   EXPECT_EQ(name(eki_hybrid_kem_decap(sk.data(), ct.data(), nullptr)), name(EKI_ERR_NULL_POINTER));
 }
 
-// §4.4: hybrid (feature off), valid pointers → UNSUPPORTED, outputs zero-filled.
+// Hybrid (feature off), valid pointers → UNSUPPORTED, outputs zero-filled.
 TEST(FfiPq, UnsupportedWithoutPq) {
   if (kWithPq) {
     GTEST_SKIP() << "built with EKI_WITH_PQ";
@@ -152,7 +152,7 @@ TEST_F(FfiPqEnabled, RoundTrip) {
   EXPECT_EQ(ss, ss2);
 }
 
-// §4.2: implicit rejection; a tampered ML-KEM ciphertext gives OK and another secret.
+// Implicit rejection: a tampered ML-KEM ciphertext gives OK and another secret.
 TEST_F(FfiPqEnabled, TamperedMlkemCiphertextGivesADifferentSecret) {
   Pk pk{};
   Sk sk{};
@@ -197,7 +197,7 @@ TEST_F(FfiPqEnabled, WrongSecretKeyGivesADifferentSecret) {
   EXPECT_NE(other, ss);
 }
 
-// §4.4: hybrid_encap, pk with all-zero x25519 part → INVALID_ARGUMENT.
+// hybrid_encap, pk with all-zero x25519 part → INVALID_ARGUMENT.
 TEST_F(FfiPqEnabled, EncapToAllZeroX25519PartIsInvalid) {
   Pk pk{};
   Sk sk{};
@@ -211,7 +211,7 @@ TEST_F(FfiPqEnabled, EncapToAllZeroX25519PartIsInvalid) {
   EXPECT_TRUE(all_zero(ss));
 }
 
-// The all-zero X25519 point gives an all-zero shared secret (§4.2) → INVALID_ARGUMENT.
+// The all-zero X25519 point gives an all-zero shared secret → INVALID_ARGUMENT.
 TEST_F(FfiPqEnabled, DecapWithAllZeroX25519PartIsInvalid) {
   Pk pk{};
   Sk sk{};

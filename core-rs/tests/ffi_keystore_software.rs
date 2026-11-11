@@ -1,8 +1,8 @@
 //! The software key store through the C ABI.
 //!
-//! Rows: plan §4.4 `ks_open` and every store row; §4.2 sequences, labels, outputs on error,
-//! last error and thread safety; §4.3 "Software". The scenarios shared with the PKCS#11 suite
-//! are in `common/ks.rs`.
+//! Rows: `ks_open` and every store row of docs/ffi-contract.md ("Per-function contract"), its
+//! sequences, labels, outputs on error, last error and thread safety. The scenarios shared with
+//! the PKCS#11 suite are in `common/ks.rs`.
 
 mod common;
 
@@ -193,8 +193,9 @@ fn label_bounded_scan() {
 /// A store handle shared by reference across threads.
 struct Shared(*mut eki_ks);
 
-// SAFETY: §4.2 "Thread safety": a handle serialises all operations with an internal lock and
-// may be shared across threads; the test closes it only after every thread has joined.
+// SAFETY: a handle serialises all operations with an internal lock and may be shared across
+// threads ("Thread safety" in docs/ffi-contract.md); the test closes it only after every thread
+// has joined.
 unsafe impl Sync for Shared {}
 
 #[test]
@@ -257,8 +258,8 @@ proptest! {
         prop_assume!(id != kek && id != mac && id != unknown_id() && id != fixed_id(0));
 
         let blob = store.wrap(&kek, &mac);
-        // The metadata is unauthenticated (§2): the same blob may be unwrapped as either
-        // secret-key algorithm.
+        // The metadata is unauthenticated ("Known limitations" in docs/ffi-contract.md): the same
+        // blob may be unwrapped as either secret-key algorithm.
         let alg = if as_aes { EKI_KEY_AES_256 } else { EKI_KEY_HMAC_SHA256 };
         store.unwrap(&kek, &blob, alg, &text, &id);
         assert_info(&store.info(&id), alg, &text);

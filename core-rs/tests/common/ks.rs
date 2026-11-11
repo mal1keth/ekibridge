@@ -1,7 +1,8 @@
 //! Key store call wrappers and the scenarios shared by the software and PKCS#11 suites.
 //!
-//! Every scenario takes an open [`Store`] and checks behaviour that plan §4.2 and §4.4 require
-//! of both backends. Backend-specific rows live in the test files themselves.
+//! Every scenario takes an open [`Store`] and checks behaviour that docs/ffi-contract.md
+//! ("Validation order", "Per-function contract") requires of both backends. Backend-specific
+//! rows live in the test files themselves.
 
 use core::ffi::c_char;
 
@@ -280,7 +281,8 @@ pub fn lifecycle(store: &Store) {
     assert_ne!(tag, store.hmac(&mac, b"message!"));
     assert_ne!(tag, store.hmac(&mac2, b"message"));
 
-    // Sign, then verify with the stateless function (never compare signature bytes: §2).
+    // Sign, then verify with the stateless function (signature bytes are never compared: "Known
+    // limitations" in docs/ffi-contract.md).
     let pk = store.public_key(&ec);
     assert_eq!(pk[0], 0x04, "SEC1 uncompressed");
     assert_eq!(pk, store.public_key(&ec), "public key is stable");
@@ -343,7 +345,7 @@ pub fn wrap_unwrap_round_trip(store: &Store) {
     assert_info(&store.info(&aes_copy), EKI_KEY_AES_256, "eki-test aes copy");
     assert_eq!(store.wrap(&aes, &mac), store.wrap(&aes_copy, &mac));
 
-    // Self-wrap is allowed (§4.4: `kek_id == key_id` (AES) → OK).
+    // Self-wrap is allowed (`kek_id == key_id` (AES) → OK).
     let self_blob = store.wrap(&kek, &kek);
     assert_ne!(self_blob, [FILL; 40]);
 
@@ -352,7 +354,7 @@ pub fn wrap_unwrap_round_trip(store: &Store) {
     assert_info(&store.info(&mac), EKI_KEY_HMAC_SHA256, "eki-test hmac");
 }
 
-/// §4.4 `ks_generate` rows and the label rules of §4.2.
+/// `ks_generate` rows and the label rules ("Labels" in docs/ffi-contract.md).
 pub fn generate_rows(store: &Store) {
     let ks = store.ptr();
     let good = label("eki-test");
@@ -445,7 +447,8 @@ pub fn generate_null_rows(store: &Store) {
         EKI_ERR_NULL_POINTER,
         "label NULL, alg 0"
     );
-    // Selector before label format (§4.2 step 2 before step 3): both INVALID_ARGUMENT.
+    // Selector before label format (step 2 before step 3 of "Validation order"): both
+    // INVALID_ARGUMENT.
     let mut id = prefilled_id();
     assert_eq!(
         generate(ks, eki_key_alg(0), empty.as_ptr(), Some(&mut id)),
@@ -453,7 +456,7 @@ pub fn generate_null_rows(store: &Store) {
     );
 }
 
-/// §4.4 rows for `get_info`, `destroy`, `get_public_key`, `sign` and `ks_hmac`.
+/// Rows for `get_info`, `destroy`, `get_public_key`, `sign` and `ks_hmac`.
 pub fn lookup_rows(store: &Store) {
     let ks = store.ptr();
     let unknown = unknown_id();
@@ -614,7 +617,7 @@ pub fn lookup_null_rows(store: &Store) {
     );
 }
 
-/// §4.4 `ks_wrap` rows, including the multi-fault rows that pin the check order
+/// `ks_wrap` rows, including the multi-fault rows that pin the check order
 /// (kek exists → key exists → kek is AES → key is AES or HMAC).
 pub fn wrap_rows(store: &Store) {
     let ks = store.ptr();
@@ -722,7 +725,7 @@ type UnwrapNullRow<'a> = (
     Option<&'a eki_key_id>,
 );
 
-/// §4.4 `ks_unwrap` rows, including the multi-fault rows that pin the check order
+/// `ks_unwrap` rows, including the multi-fault rows that pin the check order
 /// (alg → blob_len → not ECDSA → label → kek exists → kek is AES → id free → integrity).
 pub fn unwrap_rows(store: &Store) {
     let ks = store.ptr();
@@ -988,7 +991,7 @@ pub fn unwrap_rows(store: &Store) {
     assert_eq!(store.hmac(&fresh, b"m"), store.hmac(&mac, b"m"));
 }
 
-/// `eki_ks_last_error_message` conventions (§4.2 "Last error").
+/// `eki_ks_last_error_message` conventions ("Last error message" in docs/ffi-contract.md).
 pub fn last_error_rows(store: &Store) {
     let ks = store.ptr();
 

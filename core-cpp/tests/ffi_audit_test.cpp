@@ -1,6 +1,6 @@
-// The audit log through the C ABI (ABI 2 contract section 5 and amendments 3 to 6, 10 to 12): the
-// byte-exact record format with SHA-256 recomputed independently, what is logged, the head, the
-// verifier's matrix, the writer's open rows, and the rollback when a record cannot be written.
+// The audit log through the C ABI (docs/ffi-contract.md, "Audit log"): the byte-exact record format
+// with SHA-256 recomputed independently, what is logged, the head, the verifier's matrix, the
+// writer's open rows, and the rollback when a record cannot be written.
 // Write failures are provoked with RLIMIT_FSIZE (and SIGXFSZ ignored), which makes write() fail
 // with EFBIG at the limit or return a short count across it; macOS has no /dev/full.
 
@@ -443,7 +443,7 @@ TEST(FfiAudit, AuditHead) {
   EXPECT_EQ(seq, 0U);
 }
 
-// eki_audit_verify: path and file rows, the chain rows of section 7, and amendment 12.
+// eki_audit_verify: path and file rows, and the chain rows ("Verification").
 TEST(FfiAudit, VerifyMatrix) {
   const TempDir dir;
   const std::string path = dir.file("verify.log");
@@ -646,7 +646,8 @@ TEST(FfiAudit, WriterOpenRows) {
   EXPECT_EQ(continued.at(1).seq, 2U);
   EXPECT_EQ(continued.at(1).prev, hash_of(line));
 
-  // Tampered, or ending without a newline: AUTH_FAILED, file unchanged (amendment 10).
+  // Tampered, or ending without a newline: AUTH_FAILED, file unchanged ("Opening a store with
+  // ABI 2" in docs/ffi-contract.md).
   std::string tampered = read_file(path);
   tampered.at(10) = tampered.at(10) == '0' ? '1' : '0';
   write_file(path, tampered);
@@ -658,6 +659,34 @@ TEST(FfiAudit, WriterOpenRows) {
   EXPECT_TRUE(
       lifecycle::open_v2_fails(widen(software_config(), foreign.c_str()), EKI_ERR_AUTH_FAILED));
   EXPECT_EQ(read_file(foreign), cut);
+}
+
+// A log must be a regular file: a directory, a device and a FIFO (which must not make the call wait
+// for a writer) are BACKEND for the verifier and for the open call, whose *out stays NULL; a
+// symbolic link to a regular file is followed.
+TEST(FfiAudit, LogMustBeARegularFile) {
+  const TempDir dir;
+  const std::string fifo = dir.file("fifo");
+  ASSERT_EQ(mkfifo(fifo.c_str(), S_IRUSR | S_IWUSR), 0) << "mkfifo failed";
+  const std::string target = dir.file("target.log");
+  {
+    Handle h(software_config());
+    ASSERT_TRUE(h.open(widen(software_config(), target.c_str())));
+  }
+  const std::string link = dir.file("link.log");
+  std::filesystem::create_symlink(target, link);
+
+  std::uint64_t n = 0;
+  for (const std::string& path : {dir.path().string(), std::string{"/dev/null"}, fifo}) {
+    EKI_EXPECT_STATUS(verify(path, std::nullopt, n), EKI_ERR_BACKEND) << path;
+    EXPECT_TRUE(lifecycle::open_v2_fails(widen(software_config(), path.c_str()), EKI_ERR_BACKEND))
+        << path;
+  }
+  EKI_EXPECT_STATUS(verify(link, std::nullopt, n), EKI_OK);
+  EXPECT_EQ(n, 2U);
+  Handle h(software_config());
+  ASSERT_TRUE(h.open(widen(software_config(), link.c_str())));
+  EXPECT_EQ(lifecycle::head_seq(h.get()), std::optional<std::uint64_t>{3});
 }
 
 // A record that cannot be written: the call is BACKEND with a text saying so, a key the call

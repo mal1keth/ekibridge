@@ -1,5 +1,5 @@
-// The audit log (ABI 2 contract section 5): the record formatter, the record matcher, the stateless
-// verifier and the writer. See ekicore/audit_log.hpp for the format.
+// The audit log (docs/ffi-contract.md, "Audit log"): the record formatter, the record matcher, the
+// stateless verifier and the writer. See ekicore/audit_log.hpp for the format.
 
 #include <ekicore/audit_log.hpp>
 #include <ekicore/keystore.hpp>
@@ -57,7 +57,7 @@ namespace {
 
 // --- the pieces of a record --------------------------------------------------------------------
 
-// The op names of section 5, indexed by audit::op.
+// The op names of the record format, indexed by audit::op.
 constexpr std::array<std::string_view, 14> op_names{
     "open",    "close",           "generate",        "unwrap", "rotate", "revoke",
     "destroy", "destroy_request", "destroy_approve", "sign",   "hmac",   "hmac_verify",
@@ -467,8 +467,31 @@ outcome io_failure(std::string_view what, int error) {
   return result;
 }
 
+// Flushes the data of fd to stable storage: 0, or -1 with errno set. On Apple platforms fsync
+// leaves the data in the drive's cache, so F_FULLFSYNC asks the drive to write it out (which is
+// what File::sync_data does in the Rust library); a file system that does not support it fails
+// that call, and fsync is then the best flush there is.
+int flush_to_disk(int fd) {
+#ifdef __APPLE__
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg): fcntl(2) is variadic by definition
+  int full = ::fcntl(fd, F_FULLFSYNC);
+  while (full != 0 && errno == EINTR) {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg): fcntl(2) is variadic by definition
+    full = ::fcntl(fd, F_FULLFSYNC);
+  }
+  if (full == 0) {
+    return 0;
+  }
+#endif
+  int synced = ::fsync(fd);
+  while (synced != 0 && errno == EINTR) {
+    synced = ::fsync(fd);
+  }
+  return synced;
+}
+
 // Writes line with one write call (repeated only when interrupted before writing anything) and
-// flushes the file with fsync.
+// flushes the file to stable storage.
 outcome write_line(int fd, std::string_view line) {
   ssize_t written = ::write(fd, line.data(), line.size());
   while (written < 0 && errno == EINTR) {
@@ -484,11 +507,7 @@ outcome write_line(int fd, std::string_view line) {
                   std::to_string(line.size()) + " bytes were written",
     };
   }
-  int synced = ::fsync(fd);
-  while (synced != 0 && errno == EINTR) {
-    synced = ::fsync(fd);
-  }
-  if (synced != 0) {
+  if (flush_to_disk(fd) != 0) {
     return io_failure("flushing the audit log to disk", errno);
   }
   return {};

@@ -1,7 +1,8 @@
-//! Key lifecycle and dual control of destroy (ABI 2 contract §3, §4, §6, §7) on the software
-//! backend of both libraries: the state table, the position of the state check in each
-//! validation sequence, the `eki_ks_open_v2` rows, the NULL rows of the nine ABI 2 functions and
-//! dual control with approver keys held in a software store of the other library.
+//! Key lifecycle and dual control of destroy (docs/ffi-contract.md: "Key states", "Opening a store
+//! with ABI 2", "Dual control", "Per-function contract") on the software backend of both
+//! libraries: the state table, the position of the state check in each validation sequence, the
+//! `eki_ks_open_v2` rows, the NULL rows of the nine ABI 2 functions and dual control with approver
+//! keys held in a software store of the other library.
 //!
 //! Every expected status comes from the contract, so a row that passes in both libraries also
 //! gives the same status in both. The audit log has its own module (`audit`); the PKCS#11 rows
@@ -27,7 +28,7 @@ use ekicore_conformance::{
     prefill_array, prefill_key_id, prefill_key_info, prefill_key_info_v2,
 };
 
-/// The state table of §3 on two kinds of plain handle (`eki_ks_open`, and `eki_ks_open_v2`
+/// The state table ("Key states") on two kinds of plain handle (`eki_ks_open`, and `eki_ks_open_v2`
 /// without log or approvers), with a dual-control handle for the `destroy_request` row.
 #[test]
 fn state_table() {
@@ -49,8 +50,8 @@ fn state_table() {
 }
 
 /// The state check comes after the existence and type checks of the same key and before every
-/// later check (§3, the per-function sequences), plus the rotate, revoke and get_info_v2 rows of
-/// §7. Uses an `eki_ks_open` handle, to which the state rules apply as well (§1).
+/// later check ("Key states" and "Per-function contract"), plus the rotate, revoke and
+/// get_info_v2 rows. Uses an `eki_ks_open` handle, to which the state rules apply as well.
 #[test]
 fn state_check_order() {
     let Some((a, b)) = common::setup("ks_lifecycle::state_check_order") else {
@@ -795,8 +796,8 @@ fn open_v2_row(
     }
 }
 
-/// The `eki_ks_open_v2` rows of §4 and §7 that need no file: selectors, the approver fields, the
-/// audit path length and the order of NULL and format checks across fields.
+/// The `eki_ks_open_v2` rows ("Opening a store with ABI 2") that need no file: selectors, the
+/// approver fields, the audit path length and the order of NULL and format checks across fields.
 #[test]
 fn open_v2_error_matrix() {
     let Some((a, b)) = common::setup("ks_lifecycle::open_v2_error_matrix") else {
@@ -1016,8 +1017,8 @@ fn open_v2_error_matrix() {
 }
 
 /// A handle without approvers: destroy works as in ABI 1, `destroy_request` and
-/// `destroy_approve` are UNSUPPORTED before any other check (§6, §7). Run on an `eki_ks_open`
-/// handle and on an `eki_ks_open_v2` handle without approvers.
+/// `destroy_approve` are UNSUPPORTED before any other check ("Validation order", step 2). Run on
+/// an `eki_ks_open` handle and on an `eki_ks_open_v2` handle without approvers.
 #[test]
 fn dual_control_needs_approvers() {
     let Some((a, b)) = common::setup("ks_lifecycle::dual_control_needs_approvers") else {
@@ -1076,7 +1077,7 @@ fn single_control_rows(r: &mut Report, lib: &Lib, st: &Store, kind: &str) -> Flo
     Ok(())
 }
 
-/// Dual control (§6, §7) on a software handle of library `x` whose approver keys live in a
+/// Dual control ("Dual control") on a software handle of library `x` whose approver keys live in a
 /// software store of the other library `y`, so every approval is signed by `y`'s `eki_ks_sign`
 /// and checked by `x`; run in both directions, with two and with three configured approvers.
 #[test]

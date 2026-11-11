@@ -1,9 +1,9 @@
 //! Hybrid X25519 + ML-KEM-768 KEM through the C ABI.
 //!
-//! Rows: plan §4.4 `hybrid` rows and the KEM sequence of §4.2 (NULL checks, then UNSUPPORTED
-//! when not compiled in, then the all-zero X25519 and ML-KEM key checks; decapsulation never
-//! fails). The round-trip tests need `--features pq`; without it the functions must answer
-//! `EKI_ERR_UNSUPPORTED`.
+//! Rows: the hybrid rows of docs/ffi-contract.md ("Hybrid KEM (optional)") and its sequence
+//! (NULL checks, then UNSUPPORTED when not compiled in, then the all-zero X25519 and ML-KEM key
+//! checks; decapsulation never fails). The round-trip tests need `--features pq`; without it the
+//! functions must answer `EKI_ERR_UNSUPPORTED`.
 
 mod common;
 
@@ -126,7 +126,7 @@ mod without_pq {
         );
     }
 
-    /// UNSUPPORTED is an error status, so every output is zero-filled (§4.2).
+    /// UNSUPPORTED is an error status, so every output is zero-filled ("Outputs on error").
     #[test]
     fn unsupported_zeroes_outputs() {
         let mut pk: Pk = [FILL; EKI_HYBRID_PK_LEN];
@@ -260,7 +260,7 @@ mod with_pq {
 
     #[test]
     fn decap_with_all_zero_x25519_part_is_invalid() {
-        // The all-zero X25519 point gives an all-zero shared secret (§4.2).
+        // The all-zero X25519 point gives an all-zero shared secret.
         let (pk, sk) = new_keypair();
         let (mut ct, _) = encapsulate(&pk);
         ct[..X25519_LEN].fill(0);

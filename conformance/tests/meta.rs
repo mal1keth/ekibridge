@@ -1,5 +1,5 @@
-//! Metadata functions: `eki_abi_version`, `eki_version`, `eki_status_name` (plan §4.1, §4.2
-//! "Versions", §4.4 `status_name` row).
+//! Metadata functions: `eki_abi_version`, `eki_version`, `eki_status_name` (docs/ffi-contract.md,
+//! "Metadata" and "Status codes").
 
 mod common;
 
@@ -94,7 +94,7 @@ fn status_name_matches_the_harness_table() {
             }
         }
     }
-    // §4.4 and the ABI 2 contract §7: these five map to the unknown name.
+    // These five map to the unknown name ("Status codes" in docs/ffi-contract.md).
     for s in [-1, i32::MIN, i32::MAX, 13, 99] {
         r.check(status_name(s) == status::UNKNOWN_NAME, || {
             format!("harness table maps {s} to {}", status_name(s))

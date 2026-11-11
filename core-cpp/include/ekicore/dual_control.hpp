@@ -1,8 +1,8 @@
 #pragma once
 
-// Dual control of destroy (ABI 2 contract section 6): the approver keys of a handle and its pending
-// destroy requests. Layer 2 decides every status; this class only holds the data and answers
-// lookups. Requests live in the handle and vanish with it.
+// Dual control of destroy (docs/ffi-contract.md, "Dual control"): the approver keys of a handle
+// and its pending destroy requests. Layer 2 decides every status; this class only holds the data
+// and answers lookups. Requests live in the handle and vanish with it.
 
 #include <ekicore.h>
 #include <ekicore/keystore.hpp>
