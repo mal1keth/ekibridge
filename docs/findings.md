@@ -1,20 +1,34 @@
 # Findings
 
-A log of every fuzzing campaign and every bug found by fuzzing, sanitizers, Miri or the conformance
-harness. One row per run of a target, newest first. `Runs` is the number of executions; a run
-stopped by its time limit says so. `Coverage` is libFuzzer's `cov` figure at the end of the run
-(instrumented edges reached), with the figure after loading the seeds in brackets. The Rust
-figures count edges in `ekicore-rs` and the RustCrypto crates; the C++ figures count edges in
-`libekicore` only, because OpenSSL is not instrumented, so the two languages' figures cannot be
-compared with each other. `Result` is `clean` or a description of the failure. A finding stays in
-the table after it is fixed: `Notes` names the fix and the regression test that now covers it.
+This is the log of fuzzing campaigns. It is for anyone who wants to know how much fuzzing stands
+behind a claim made elsewhere in this repository, and what the fuzzing found. A bug found by
+fuzzing, the sanitizers, Miri or the conformance harness is recorded here as well, and it stays
+in the table after it is fixed. So far the log holds one campaign and no bug.
 
-Campaign setup for the 2026-11-11 runs: macOS 26.2 on Apple silicon (8 cores), Homebrew LLVM clang
-23.1.3 and OpenSSL 3.5.9 for C++ (`cmake --preset fuzz`: libFuzzer, AddressSanitizer and
-UndefinedBehaviorSanitizer; the KEM build adds `-DEKI_WITH_PQ=ON`), cargo-fuzz 0.13.2 on nightly
-Rust for Rust (release build with AddressSanitizer, debug assertions and overflow checks; the KEM
-build adds `--features pq`). Every run started from the committed named seeds only, copied to a
-scratch directory, with `-runs=200000`. Software key store only; no PKCS#11 token was opened.
+## How to read the table
+
+There is one row per run of a target, newest first.
+
+| Column | Meaning |
+|---|---|
+| `Runs` | The number of executions. A run that ended before its planned count says how: at its time limit, or stopped by hand. |
+| `Coverage` | libFuzzer's `cov` figure at the end of the run (instrumented edges reached), with the figure after loading the seeds in brackets. |
+| `Result` | `clean` or a description of the failure. |
+| `Notes` | For a finding, the fix and the regression test that now covers it. |
+
+The coverage figures of the two languages cannot be compared with each other. The Rust figures
+count edges in `ekicore-rs` and the RustCrypto crates; the C++ figures count edges in
+`libekicore` only, because OpenSSL is not instrumented.
+
+## Campaign of 2026-11-11
+
+I ran the campaign on macOS 26.2 on Apple silicon (8 cores). The C++ targets were built with
+Homebrew LLVM clang 23.1.3 and OpenSSL 3.5.9 using `cmake --preset fuzz` (libFuzzer,
+AddressSanitizer and UndefinedBehaviorSanitizer); the KEM build adds `-DEKI_WITH_PQ=ON`. The Rust
+targets were built with cargo-fuzz 0.13.2 on nightly Rust, as a release build with
+AddressSanitizer, debug assertions and overflow checks; the KEM build adds `--features pq`. Every
+run started from the committed named seeds only, copied to a scratch directory, with
+`-runs=200000`. The targets used the software key store only; no PKCS#11 token was opened.
 
 | Date | Target | Runs | Coverage | Result | Notes |
 |---|---|---|---|---|---|
@@ -40,5 +54,10 @@ scratch directory, with `-runs=200000`. Software key store only; no PKCS#11 toke
 | 2026-11-11 | C++ `fuzz_aead_open` | 200000 | 324 (287) | clean | |
 
 Nothing was found in this campaign: no crash, no sanitizer report and no property failure in any
-run of either language. The Rust `ffi_status` target did not reach 200000 executions in either
-build; its longest clean runs are 34510 executions (default features) and 82638 (`pq`).
+run of either language.
+
+The Rust `ffi_status` target did not reach 200000 executions in either build. I stopped its first
+run by hand at 34510 executions; the other three runs ended at their time limits. Its longest
+clean runs are 34510 executions (default features) and 82638 (`pq`). Two things held it back:
+every logged call flushes the audit log with `F_FULLFSYNC` on macOS, and the machine went to
+sleep during each of the four runs. I have not yet run that target to the full count.

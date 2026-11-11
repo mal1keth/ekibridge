@@ -1,12 +1,22 @@
 # Threat model
 
-Scope: the two ekicore libraries (`libekicore`, `libekicore_rs`) and the C ABI between them and their
-callers, as specified in [ffi-contract.md](ffi-contract.md), at ABI version 2. The calling
-application, the operating system, the hardware, OpenSSL, the RustCrypto crates and the PKCS#11
-module are outside the libraries; this document says where the libraries depend on them.
+This document says what the two ekicore libraries, `libekicore` and `libekicore_rs`, protect,
+against whom, by what mechanism, and what evidence there is that the mechanism works. It also
+says what they do not protect. It is written for someone deciding whether the libraries can hold
+keys in their process, and for a reviewer who wants to check each claim against the code.
+
+The scope is the two libraries and the C ABI between them and their callers, as specified in the
+[contract](ffi-contract.md) at ABI version 2. The calling application, the operating system, the
+hardware, OpenSSL, the RustCrypto crates and the PKCS#11 module are outside the libraries; this
+document says where the libraries depend on them.
 
 Source references are to files in this repository. "Both" means the C++ library under `core-cpp/`
 and the Rust library under `core-rs/`.
+
+So far I have built and tested the implementation on macOS (Apple silicon) only. The CI workflows
+also run on Ubuntu 24.04, but they last ran there against the scaffolding, before the functions
+were implemented. Nothing has been verified on Linux for the implemented code, including
+SoftHSM2 2.6.1, GCC and the Linux flush path.
 
 ## What is protected
 
@@ -20,15 +30,16 @@ and the Rust library under `core-rs/`.
 | The destroy decision | the handle's pending requests and approver keys | with dual control, a key is destroyed only after two different configured approvers signed the same fresh request for that key |
 | Key lifecycle state | the handle (software) or the token's usage attributes (PKCS#11) | no call moves a key back from RETIRED or REVOKED |
 
-Not protected:
+The libraries do not protect the following.
 
-- Caller-owned memory: keys passed to stateless functions, plaintexts, shared secrets, the PIN and
-  the configuration strings are the caller's to wipe ([contract, secret handling](ffi-contract.md#secret-handling)).
-- Confidentiality of anything from the process itself: code in the same process can read every
-  key the software store holds.
-- Availability: a caller can exhaust memory with keys, a full disk makes logged calls fail, and
-  another process can hold the log lock.
-- Metadata of wrapped keys: algorithm, label and id travel outside the blob and are not
+- Memory the caller owns is the caller's to wipe: keys passed to stateless functions, plaintexts,
+  shared secrets, the PIN and the configuration strings
+  ([contract, secret handling](ffi-contract.md#secret-handling)).
+- Nothing is confidential from the process itself. Code in the same process can read every key
+  the software store holds.
+- Availability is not protected. A caller can exhaust memory with keys, a full disk makes logged
+  calls fail, and another process can hold the log lock.
+- The metadata of a wrapped key (algorithm, label and id) travels outside the blob and is not
   authenticated (see [limits](#limits)).
 - Key ids, labels, approver public keys, audit records and the audit head are not secret.
 
@@ -51,15 +62,14 @@ Not protected:
  └───────────────┘                 └──────────────────────┘
 ```
 
-There are three boundaries the libraries guard:
+The libraries guard three boundaries.
 
-1. **The C ABI.** Every pointer, length, selector, label, configuration field, ciphertext,
+1. At the C ABI, every pointer, length, selector, label, configuration field, ciphertext,
    signature, blob, public key and KEM ciphertext is untrusted.
-2. **The PKCS#11 module.** The module and the token are trusted with key material, but the
-   objects in the token are shared with every program that has the user PIN, and may change
-   between two calls.
-3. **The file system.** The audit log is read back when a handle opens it and by
-   `eki_audit_verify`; its content is untrusted.
+2. The PKCS#11 module and the token are trusted with key material. The objects in the token are
+   shared with every program that has the user PIN, and may change between two calls.
+3. The audit log on the file system is read back when a handle opens it and by
+   `eki_audit_verify`. Its content is untrusted.
 
 The cryptographic providers (OpenSSL, the RustCrypto crates) are trusted to implement their
 algorithms correctly. The libraries are responsible for calling them correctly and for not releasing
@@ -67,32 +77,33 @@ their intermediate output.
 
 ## Adversaries
 
-In scope:
+Four adversaries are in scope.
 
-1. **A hostile or buggy caller in the same process**, limited to the ABI: NULL pointers with and
-   without lengths, lengths above every cap, unknown selectors, unterminated or non-printable
-   labels, malformed configurations, calls in any order on any handle state. Goal: memory
-   corruption, a crash, undefined behaviour, an unexpected `EKI_OK`, or a status that differs
-   between the two libraries. Out of scope for this adversary: a non-NULL pointer that points to
-   fewer bytes than the length says, a freed handle, and a close that races another call on the
-   same handle. The contract makes those the caller's responsibility, and no library check can
-   detect them.
-2. **A party that controls data the caller passes on**: ciphertexts, tags, AAD, signatures,
-   messages, wrapped-key blobs, hybrid KEM public keys and ciphertexts. Goal: get modified data
-   accepted, learn plaintext released before authentication, or crash the process.
-3. **Another process with access to the token or the log file.** With the token and the user PIN
-   it can use, create, destroy and change keys; with write access to the log it can edit,
-   truncate or replace it. Goal: hide or forge audit records, or undo a key state change. The
-   libraries detect edits to the log; they do not defend keys against a holder of the PIN (see
+1. A hostile or buggy caller in the same process, acting only through the ABI. It passes NULL
+   pointers with and without lengths, lengths above every cap, unknown selectors, unterminated or
+   non-printable labels and malformed configurations, and it makes calls in any order on any
+   handle state. It is after memory corruption, a crash, undefined behaviour, an unexpected
+   `EKI_OK`, or a status that differs between the two libraries. The model does not cover a
+   caller that passes a non-NULL pointer to fewer bytes than the length says, uses a freed
+   handle, or closes a handle while another call on it is running. The contract makes those the
+   caller's responsibility, and no library check can detect them.
+2. A party that controls data the caller passes on: ciphertexts, tags, AAD, signatures, messages,
+   wrapped-key blobs, hybrid KEM public keys and ciphertexts. It wants modified data accepted,
+   plaintext released before authentication, or a crash of the process.
+3. Another process with access to the token or the log file. With the token and the user PIN it
+   can use, create, destroy and change keys; with write access to the log it can edit, truncate
+   or replace it. It wants to hide or forge audit records, or to undo a key state change. The
+   libraries detect edits to the log. They do not defend keys against a holder of the PIN (see
    [limits](#limits)).
-4. **Someone who later reads process memory or swap** (core dump, swap file, a memory-safety bug
-   elsewhere in the process). Goal: recover keys, PINs or plaintexts handled earlier. The libraries
-   reduce what remains (wiping, locked pages in C++); they do not prevent it.
+4. Someone who later reads process memory or swap, through a core dump, a swap file or a
+   memory-safety bug elsewhere in the process, and wants keys, PINs or plaintexts handled
+   earlier. The libraries reduce what remains (wiping, and locked pages in C++); they do not
+   prevent the read.
 
-Out of scope: the operating system and anyone with its privileges; physical and hardware attacks,
-including cache and power side channels; a malicious or faulty cryptographic provider or PKCS#11
-module; supply-chain attacks on dependencies (`cargo deny` checks advisories and licences, which is
-not a defence against them); and timing attacks other than those listed under
+Out of scope are the operating system and anyone with its privileges; physical and hardware
+attacks, including cache and power side channels; a malicious or faulty cryptographic provider or
+PKCS#11 module; supply-chain attacks on dependencies (`cargo deny` checks advisories and licences,
+which is not a defence against them); and timing attacks other than those listed under
 [time that depends on data](#time-that-depends-on-data).
 
 ## Guarantees and mechanisms per boundary
@@ -118,28 +129,62 @@ not a defence against them); and timing attacks other than those listed under
   EC keys also `CKA_EXTRACTABLE` FALSE) and never enter library memory
   ([contract, PKCS#11 object mapping](ffi-contract.md#pkcs11-object-mapping-and-lifecycle)).
 - Objects are looked up again by `CKA_ID` for every operation; handles are not kept, because
-  another session may change the token in between. An object of an unexpected shape is foreign and
-  is answered with a defined status, not used.
+  another session may change the token in between. An object of an unexpected shape is foreign:
+  the library answers with a defined status and does not use it.
 - Key state lives in usage attributes, so the token refuses what a state forbids. The library
-  refuses first; the token is a second check, not the only one.
+  refuses first, which makes the token a second check.
 - Return codes are mapped to statuses; a failing module call is `EKI_ERR_BACKEND` with the `CKR_*`
-  name in the last-error message.
+  name in the last-error message, with the exceptions listed under
+  [PKCS#11 specifics](#pkcs11-specifics).
 
 ### The file system (audit log)
 
 - Each record carries the SHA-256 of the previous one, so the records form a chain from the first
   record to the head ([contract, audit log](ffi-contract.md#audit-log)).
 - `eki_audit_verify` and the open check rebuild the exact bytes every record must have from the
-  fields a writer chooses and accept only those bytes; lines are read with a bound of 512 bytes, so
-  a file without newlines is not read into memory whole. The C++ verifier refuses files that are
-  not regular (`core-cpp/src/keystore/audit_log.cpp`).
+  fields a writer chooses and accept only those bytes. Lines are read with a bound of 512 bytes,
+  so a file without newlines is not read into memory whole.
+- Both libraries open the path with `O_NONBLOCK` and refuse anything that is not a regular file,
+  judged on the open file (`core-cpp/src/keystore/audit_log.cpp`,
+  `core-rs/src/keystore/audit.rs`). A FIFO or a device at the path fails the call without being
+  read, and a FIFO does not make the call wait.
 - With `expected_head`, the last hash must equal a head stored elsewhere, which detects a cut tail
   and a replaced chain.
 - The writer holds an exclusive `flock` lock for the life of the handle, appends one record per
   logged call with a single `write`, and flushes it before the call returns. A record that cannot
   be written fails the call with `EKI_ERR_BACKEND` and is truncated away.
 
-### Time that depends on data
+## PKCS#11 specifics
+
+`C_Initialize` and `C_Finalize` act on the whole process, not on a session. Each library keeps
+a process-wide registry keyed by module path. An entry holds the loaded module, its function
+list, whether this library initialised it, and the number of open handles.
+`CKR_CRYPTOKI_ALREADY_INITIALIZED` is accepted and means someone else owns finalisation.
+`eki_ks_close` closes its session and decrements the handle count; when the count reaches zero it
+calls `C_Finalize` only if this library performed `C_Initialize`.
+
+`C_Login(CKU_USER)` logs in every session of the application, so `CKR_USER_ALREADY_LOGGED_IN` is
+accepted. For the same reason `eki_ks_close` never calls `C_Logout`, which would log out every
+other open handle.
+
+If `libekicore` and `libekicore_rs` both hold PKCS#11 stores open at once, only one of them owns
+`C_Finalize` and the other can be left with a finalised module. The conformance suite opens them
+one after the other (the token persists on disk).
+
+The module's return codes map to statuses as follows.
+
+| The module's answer | Status |
+|---|---|
+| no object found by `CKA_ID` | `EKI_ERR_KEY_NOT_FOUND` |
+| any `C_UnwrapKey` failure after all argument checks passed (SoftHSM2 reports an AES-KW integrity failure as `CKR_GENERAL_ERROR`) | `EKI_ERR_AUTH_FAILED` |
+| `CKR_SIGNATURE_INVALID` or `CKR_SIGNATURE_LEN_RANGE` from the `C_Verify` of an HMAC tag | `EKI_ERR_AUTH_FAILED` |
+| any other failure | `EKI_ERR_BACKEND`, with the `CKR_*` name in the last-error message |
+
+The SoftHSM2 token the tests use (`ekibridge`, user PIN `1234`, SO PIN `12345678`) is a throwaway
+that `scripts/softhsm-init.sh` creates inside the checkout. Those values are for tests only, and
+the fuzz targets do not use the token.
+
+## Time that depends on data
 
 | Operation | Timing | Why that is acceptable, or not |
 |---|---|---|
@@ -153,7 +198,7 @@ not a defence against them); and timing attacks other than those listed under
 | Pending destroy request lookup | constant time per request in C++ (`core-cpp/include/ekicore/dual_control.hpp`); a `BTreeMap` lookup in Rust (`core-rs/src/keystore/dual.rs`) | a request is not an authenticator: an approval also needs a configured approver's signature over it |
 | Audit head comparison | a plain comparison (`core-rs/src/keystore/audit.rs`) | the head is public |
 
-No side-channel measurement has been made; the table records what the source does.
+I have made no side-channel measurement. The table records what the source does.
 
 ## Testing evidence
 
@@ -170,7 +215,7 @@ No side-channel measurement has been made; the table records what the source doe
 Each target exists in both languages with the same input layout, so one seed file drives both
 (`core-rs/fuzz/src/lib.rs`, `core-cpp/fuzz/fuzz_input.hpp`). Outputs are exactly sized heap
 allocations pre-filled with `0xA5`, so AddressSanitizer catches an access one byte too far and the
-targets can check both "zero-filled" and "untouched".
+targets can tell a zero-filled output from an untouched one.
 
 | Rust (`core-rs/fuzz/fuzz_targets/`) | C++ (`core-cpp/fuzz/`) | Properties |
 |---|---|---|
@@ -182,118 +227,109 @@ targets can check both "zero-filled" and "untouched".
 | `hkdf` | `fuzz_hkdf` | exact status for every length; prefix stability between two output lengths; over-cap output untouched |
 | `ecdsa_sign_verify` | `fuzz_ecdsa_sign_verify` | sign with a stored key, verify unchanged (accepted) and with a changed signature, message or public key (rejected) |
 
-Corpora: `core-rs/fuzz/corpus/<target>` and `core-cpp/fuzz/corpus/fuzz_<target>` hold the same
-named seeds, written by `core-rs/fuzz/examples/seeds.rs`: conformance vectors (RFC 4231, RFC 5869,
-RFC 8439, AES-GCM test cases, RFC 6979) and artefacts the library produced (an audit log and
-variants of it cut, edited and reordered, a wrapped key, a KEM key pair and ciphertext), plus
-configurations that reach the audit log, dual control, the PKCS#11 argument checks and NULL
-fields. Inputs that libFuzzer adds are named by their SHA-1 and ignored by git.
+Each target has a corpus directory named after it, under `core-rs/fuzz/corpus/` and
+`core-cpp/fuzz/corpus/`. A Rust target and its C++ counterpart hold the same named seeds, written
+by `core-rs/fuzz/examples/seeds.rs`. The seeds are conformance vectors (RFC 4231, RFC 5869, RFC
+8439, AES-GCM test cases, RFC 6979), artefacts the library produced (an audit log and variants of
+it cut, edited and reordered, a wrapped key, a KEM key pair and ciphertext), and configurations
+that reach the audit log, dual control, the PKCS#11 argument checks and NULL fields. Inputs that
+libFuzzer adds are named by their SHA-1 and ignored by git.
 
-Bug classes the targets can find: memory errors and undefined behaviour in either library (under
-the sanitizers), uncaught panics and exceptions (`EKI_ERR_INTERNAL`), outputs left non-zero after
-a failure, statuses outside the contract or in the wrong validation order, an audit verifier that
-accepts a log the strict parser rejects or the reverse, forgeries accepted, round trips that do not
-return their input, and lock or file state left behind by a closed handle.
+The targets can find memory errors and undefined behaviour in either library (under the
+sanitizers), uncaught panics and exceptions (`EKI_ERR_INTERNAL`), outputs left non-zero after a
+failure, statuses outside the contract or in the wrong validation order, an audit verifier that
+accepts a log the strict parser rejects or the reverse, forgeries accepted, round trips that do
+not return their input, and lock or file state left behind by a closed handle.
 
-What the targets do not reach:
+What they do not reach:
 
-- **The PKCS#11 backend.** The targets use the software backend only. A configuration that selects
-  PKCS#11 names a module path that does not exist, so the library's argument checks run and the
-  module load fails with `EKI_ERR_BACKEND`; the SoftHSM2 token is never opened by a fuzz target.
-  Token behaviour is covered by the unit tests and the `ks_pkcs11` and `ks_pkcs11_lifecycle`
-  conformance modules only.
-- **Concurrency.** Every target is single-threaded; the handle lock and the log lock across
-  processes are covered by unit tests only.
-- **Timing.** Nothing measures time.
-- **Failing I/O and failing randomness.** A full disk, a short write or a failing random source is
-  covered by fault-injection unit tests, not by fuzzing.
-- **Pointers that lie about their length.** The targets pass honest buffers; a caller that does not
-  is outside the contract.
-- **Cross-language disagreement.** Each target checks one library against the contract and its own
-  oracles; agreement between the libraries is the conformance harness's job.
+| Not reached | Why | What covers it instead |
+|---|---|---|
+| The PKCS#11 backend | The targets use the software backend only. A configuration that selects PKCS#11 names a module path that does not exist, so the library's argument checks run and the module load fails with `EKI_ERR_BACKEND`; the SoftHSM2 token is never opened by a fuzz target. | only the unit tests and the `ks_pkcs11` and `ks_pkcs11_lifecycle` conformance modules |
+| Concurrency | Every target is single-threaded. | unit tests of the handle lock and of the log lock across processes |
+| Timing | Nothing measures time. | nothing |
+| Failing I/O and failing randomness: a full disk, a short write, a failing random source | The targets run on a working file system and random source. | fault-injection unit tests |
+| Pointers that lie about their length | The targets pass honest buffers; a caller that does not is outside the contract. | nothing |
+| Disagreement between the two libraries | Each target checks one library against the contract and its own oracles. | the conformance harness |
+| A wrong SHA-256 in the audit chain | The oracle of the `audit_verify` targets parses the grammar on its own but hashes with the same code as the library it checks (`sha2` in Rust, OpenSSL in C++). | the conformance `audit` module, in which each library verifies and continues the other's log |
 
-Run lengths: each target is meant to run for 200000 executions per campaign in each language, the
-KEM targets and `ffi_status` also in a build with the hybrid KEM compiled in. The campaign of
-2026-11-11 is recorded run by run in [findings.md](findings.md): every C++ run and every Rust run
-except `ffi_status` reached 200000 executions with no finding; the Rust `ffi_status` runs were
-stopped by their time limit at 34510 executions (default features) and 82638 (`pq`), also with no
-finding, because each logged call flushes the audit log with `F_FULLFSYNC` on macOS and the
-machine slept during the runs. CI (`.github/workflows/fuzz.yml`) runs every
-target with a two-minute limit per target on each push, which is a smoke test, not a campaign.
+Each target is meant to run for 200000 executions per campaign in each language, and the KEM
+targets and `ffi_status` also in a build with the hybrid KEM compiled in. The campaign of
+2026-11-11 is recorded run by run in [findings.md](findings.md). Every C++ run, and every Rust
+run except `ffi_status`, reached 200000 executions with no finding. The Rust `ffi_status` target
+did not reach that count in four runs. I stopped the first default-features run by hand at 34510
+executions, after 2008 s; its rerun and both `pq` runs ended at their time limits, at 17795,
+76679 and 82638 executions. None of the four found anything. The target is slow because each
+logged call flushes the audit log with `F_FULLFSYNC` on macOS, and the machine also slept during
+the runs.
 
-## PKCS#11 specifics
-
-- **Initialisation is per process.** `C_Initialize` and `C_Finalize` act on the whole process, not on
-  a session. Each library keeps one process-wide registry per module path (loaded module, function
-  list, whether this library initialised it, number of open handles). `CKR_CRYPTOKI_ALREADY_INITIALIZED`
-  is accepted and means someone else owns finalisation.
-- **Login is per application.** `C_Login(CKU_USER)` logs in every session of the application;
-  `CKR_USER_ALREADY_LOGGED_IN` is accepted. For the same reason `eki_ks_close` never calls `C_Logout`,
-  which would log out every other open handle.
-- **Finalize rule.** `eki_ks_close` closes its session and decrements the handle count; when the
-  count reaches zero it calls `C_Finalize` only if this library performed `C_Initialize`.
-- **Two libraries, one process.** If `libekicore` and `libekicore_rs` both hold PKCS#11 stores open
-  at once, only one of them owns `C_Finalize` and the other can be left with a finalised module. The
-  conformance suite opens them one after the other (the token persists on disk).
-- **Return codes.** Zero objects found by `CKA_ID` → `EKI_ERR_KEY_NOT_FOUND`; any `C_UnwrapKey`
-  failure after all argument checks passed → `EKI_ERR_AUTH_FAILED` (SoftHSM2 reports an AES-KW
-  integrity failure as `CKR_GENERAL_ERROR`); everything else → `EKI_ERR_BACKEND` with the `CKR_*`
-  name in the last-error message.
-- **Test token.** The SoftHSM2 token used by the tests (`ekibridge`, user PIN `1234`, SO PIN
-  `12345678`) is a throwaway created by `scripts/softhsm-init.sh` inside the checkout. Those values
-  are test-only, and the fuzz targets do not use the token.
+`.github/workflows/fuzz.yml` runs every target from its committed seeds for at most 200000
+executions or two minutes, whichever comes first, on each push and pull request and once a week.
+That is a smoke test, not a campaign, and it has not yet run against the implemented functions.
 
 ## Limits
 
-- **Unwiped stack residue.** In the Rust library, temporaries inside the RustCrypto crates stay on
-  the stack: the padded HMAC key block, the HKDF pseudorandom key, AES-GCM counter and tag
-  temporaries, the AES key wrap scratch block, ECDSA signing temporaries and RFC 6979 state, `p256`
-  candidate scalars, moved copies of signing keys, and X25519 and ML-KEM intermediates
+### Secrets in process memory
+
+- In the Rust library, temporaries inside the RustCrypto crates stay on the stack unwiped: the
+  padded HMAC key block, the HKDF pseudorandom key, AES-GCM counter and tag temporaries, the AES
+  key wrap scratch block, ECDSA signing temporaries and RFC 6979 state, `p256` candidate scalars,
+  moved copies of signing keys, and X25519 and ML-KEM intermediates
   ([contract, secret handling](ffi-contract.md#secret-handling)). The C++ library does not control
   the stack either.
-- **No memory locking in Rust.** The Rust library locks no pages, so key material can reach swap.
-  The C++ library locks `secret_buffer` pages, best effort, when built with `EKI_MLOCK` (on by
-  default); a failed `mlock` is not an error.
-- **OpenSSL-held private keys.** A software ECDSA key in the C++ library is an `EVP_PKEY` in
-  OpenSSL's memory, not in locked memory; OpenSSL clears it on free. Whether OpenSSL wipes the
-  hybrid KEM `EVP_PKEY` objects on free has not been verified.
-- **Unauthenticated wrapped-key metadata.** The wrapped blob is plain RFC 3394 output. The
-  algorithm, label and id are not bound to it, so whoever can change them can have an AES key
-  unwrapped as an HMAC key (or the reverse) under a label of their choosing.
-- **PINs in process memory.** The PIN is a C string in caller memory before and after
-  `eki_ks_open`; the library's own copy is wiped after login.
-- **SoftHSM2 is a software token.** Its keys are files on disk protected by the PIN; "never enters
-  library memory" says nothing about the token process's memory or its storage. Return codes have
-  been checked against SoftHSM2 2.7.0 only.
-- **The token allows usage attributes to be set back.** SoftHSM2 2.7.0 accepts setting a cleared
+- The Rust library locks no pages, so key material can reach swap. The C++ library locks
+  `secret_buffer` pages, best effort, when built with `EKI_MLOCK` (on by default); a failed
+  `mlock` is not an error.
+- A software ECDSA key in the C++ library is an `EVP_PKEY` in OpenSSL's memory, not in locked
+  memory; OpenSSL clears it on free. I have not verified whether OpenSSL wipes the hybrid KEM
+  `EVP_PKEY` objects on free.
+- The PIN is a C string in caller memory before and after `eki_ks_open`; the library's own copy is
+  wiped after login.
+
+### Keys, tokens and approvers
+
+- The wrapped blob is plain RFC 3394 output. The algorithm, label and id are not bound to it, so
+  whoever can change them can have an AES key unwrapped as an HMAC key (or the reverse) under a
+  label of their choosing.
+- SoftHSM2 is a software token. The module runs inside the calling process and keeps its keys in
+  files on disk protected by the PIN, so "never enters library memory" is a statement about
+  `libekicore` and `libekicore_rs` only: it says nothing about the module's memory or its
+  storage. Return codes have been checked against SoftHSM2 2.7.0 only.
+- The token allows usage attributes to be set back. SoftHSM2 2.7.0 accepts setting a cleared
   usage flag back to TRUE, so only the library keeps state transitions one-way. Any program with
   the user PIN can move a key from REVOKED back to ACTIVE, or destroy it without dual control.
-- **The log tail can be cut.** A log cut after any complete record still verifies unless the head
+- Approvals are only as good as the approvers' key custody. The library checks that two different
+  configured keys signed the request; whoever holds two approver private keys can destroy any key
+  alone. The approver keys are fixed when the handle opens and are trusted as given.
+- The software store is not persistent. Keys live in memory for the lifetime of the handle and
+  are lost on close or crash.
+
+### Audit log
+
+- The log tail can be cut. A log cut after any complete record still verifies unless the head
   from `eki_ks_audit_head` is kept somewhere the attacker cannot write, and passed as
   `expected_head`. A writer of the file can also replace the whole chain with a consistent one;
   the chain is not signed.
-- **The log lock is advisory.** `flock` excludes other handles of these libraries; a process that
+- The log lock is advisory. `flock` excludes other handles of these libraries; a process that
   does not take the lock can still write the file.
-- **A write can fail after the operation happened.** If a record cannot be written, the call
-  returns `EKI_ERR_BACKEND` and undoes what it can; a destroyed key and a state change cannot be
-  undone, and the log then holds no record of them
-  ([contract, writing](ffi-contract.md#writing)).
-- **Approvals are only as good as the approvers' key custody.** The library checks that two
-  different configured keys signed the request; whoever holds two approver private keys can
-  destroy any key alone. The approver keys are fixed when the handle opens and are trusted as
-  given.
-- **Durability on macOS.** `fsync` on macOS does not flush the drive's write cache, so both
-  libraries flush each audit record with `F_FULLFSYNC` there: the Rust library through
+- A write can fail after the operation happened. If a record cannot be written, the call returns
+  `EKI_ERR_BACKEND` and undoes what it can; a destroyed key and a state change cannot be undone,
+  and the log then holds no record of them ([contract, writing](ffi-contract.md#writing)).
+- Durability on macOS depends on `F_FULLFSYNC`. `fsync` there does not flush the drive's write
+  cache, so both libraries flush each audit record with `F_FULLFSYNC`: the Rust library through
   `sync_data`, the C++ library through `fcntl(F_FULLFSYNC)`, falling back to `fsync` on a file
-  system that rejects it (on such a file system a power loss can still lose the last records
-  written by the C++ library; the Rust library fails the write instead). The cost is visible in
-  fuzzing throughput: the Rust `ffi_status` target ran at about 200 executions per second on an
-  idle machine, because it flushes a record per logged call ([findings.md](findings.md)); the
-  campaign of 2026-11-11 ran the C++ target, then still on `fsync`, at 200000 executions in 103 s.
-- **Timing.** ECDSA verification and everything else applied to public data runs in variable
-  time; no constant-time property of the providers is measured here.
-- **The software store is not persistent.** Keys live in memory for the lifetime of the handle and
-  are lost on close or crash.
-- **Thread cancellation.** The C++ `catch (...)` barrier also catches glibc's forced unwind, so
-  cancelling a thread inside a library call is unsupported. A caught Rust panic still prints
-  through the process-wide panic hook.
+  system that rejects it. On such a file system a power loss can still lose the last records
+  written by the C++ library; the Rust library fails the write instead.
+- The flush is slow, which shows in fuzzing throughput. The Rust `ffi_status` target flushes a
+  record per logged call and ran at about 200 executions per second on an idle machine; it did
+  not reach 200000 executions in any run of the 2026-11-11 campaign
+  ([findings.md](findings.md)). The C++ target reached 200000 executions in 103 s in that
+  campaign, when the C++ library still flushed with `fsync`.
+
+### Timing and threads
+
+- ECDSA verification and everything else applied to public data runs in variable time; no
+  constant-time property of the providers is measured here.
+- The C++ `catch (...)` barrier also catches glibc's forced unwind, so cancelling a thread inside
+  a library call is unsupported.
+- A caught Rust panic still prints through the process-wide panic hook.
