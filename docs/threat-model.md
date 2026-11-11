@@ -13,10 +13,11 @@ document says where the libraries depend on them.
 Source references are to files in this repository. "Both" means the C++ library under `core-cpp/`
 and the Rust library under `core-rs/`.
 
-So far I have built and tested the implementation on macOS (Apple silicon) only. The CI workflows
-also run on Ubuntu 24.04, but they last ran there against the scaffolding, before the functions
-were implemented. Nothing has been verified on Linux for the implemented code, including
-SoftHSM2 2.6.1, GCC and the Linux flush path.
+I develop and test on macOS (Apple silicon). On Linux the CI workflows build and test the
+implementation on Ubuntu 24.04. By hand I have run only parts of it on Linux (Debian 13, x86-64):
+the C++ tests built with GCC, the Miri selection and one fuzz target. The durability of the Linux
+flush path has not been tested, and I have run the PKCS#11 backend by hand only against SoftHSM2
+2.7.0 on macOS, not against the 2.6.1 that Ubuntu packages.
 
 ## What is protected
 

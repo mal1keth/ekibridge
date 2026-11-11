@@ -28,11 +28,13 @@ The project is in progress. I started it in October 2026, and no release is tagg
 Every exported function is implemented in both libraries and passes the conformance harness. A
 first fuzzing campaign of both libraries found nothing. The Rust `ffi_status` target fell short
 of its planned 200000 executions on the Mac and reached them in a later run on Linux
-([findings](docs/findings.md)). The ABI is at version 2,
-which added key lifecycle states, the audit log and dual control of destroy. The benchmark table
-is not filled in yet. So far I have built and tested the implementation on macOS (Apple silicon)
-only. The CI workflows also run on Ubuntu 24.04, but they last ran there against the scaffolding,
-before the functions were implemented.
+([findings](docs/findings.md)). The ABI is at version 2, which added key lifecycle states, the
+audit log and dual control of destroy. The benchmark table is not filled in yet.
+
+I develop and test on macOS (Apple silicon). On Linux the CI workflows build and test the
+implementation on Ubuntu 24.04, and the badges above show whether they pass. By hand I have run
+only parts of it on Linux (Debian 13, x86-64): the C++ tests built with GCC, the Miri selection
+and one fuzz target. The PKCS#11 backend I have run by hand only against SoftHSM2 2.7.0 on macOS.
 
 The table shows where each module stands.
 

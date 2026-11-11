@@ -676,11 +676,12 @@ checks and returns `EKI_ERR_UNSUPPORTED`. Only `eki_*` symbols are exported, 32 
 - The audit log records calls through one handle only. It is not signed; its integrity rests on
   the chain plus a head kept elsewhere, and its durability on the file system honouring the flush
   (`F_FULLFSYNC` or `fsync`).
-- The implementation has been built and tested on macOS (Apple silicon) only. The CI workflows
-  also run on Ubuntu 24.04, but they last ran there before the functions were implemented.
-  Nothing has been verified on Linux for the implemented code, including GCC builds, the Linux
-  flush path and the SoftHSM2 that Ubuntu packages (2.6.1). SoftHSM2 behaviour was observed on
-  version 2.7.0.
+- The implementation is developed and tested on macOS (Apple silicon). On Linux it is built and
+  tested by the CI workflows on Ubuntu 24.04; by hand only parts of it have run there (Debian 13,
+  x86-64: the C++ tests built with GCC, the Miri selection, one fuzz target). The durability of
+  the Linux flush path has not been tested, and the PKCS#11 backend has been run by hand only
+  against SoftHSM2 2.7.0 on macOS, not against the 2.6.1 that Ubuntu packages. SoftHSM2 behaviour
+  described in this document was observed on version 2.7.0.
 
 With the PKCS#11 backend:
 
