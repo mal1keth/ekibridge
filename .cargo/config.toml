@@ -1,0 +1,11 @@
+# Build configuration of this workspace.
+#
+# On x86 the `aes` and `chacha20` crates compile their wide back ends only when asked to: AES with
+# VAES on 256-bit and 512-bit registers, ChaCha20 with AVX-512. These flags ask for them. The
+# crates still detect the CPU at run time, so on a CPU without those instructions the library
+# uses the same back ends it would use without the flags (AES-NI, AVX2, SSE2 or portable code).
+#
+# RUSTFLAGS in the environment replaces these flags instead of adding to them. The Miri job sets
+# it, and cargo-fuzz does too, so the fuzz targets run the crates' default back ends.
+[target.'cfg(any(target_arch = "x86_64", target_arch = "x86"))']
+rustflags = ['--cfg', 'aes_backend="avx512"', '--cfg', 'chacha20_avx512']

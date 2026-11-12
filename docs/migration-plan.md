@@ -144,7 +144,7 @@ A module moves to the Rust implementation only when every item is checked.
       KEM and the key-store steps (5 to 7) have none, so the item cannot be checked for them
       until workloads are written. The two runs recorded so far, on a laptop and on a virtual
       server, neither of them production hardware, have the HMAC and HKDF rows under 1.10 on both
-      machines and every 64 KiB AEAD row over it: 1.9 to 2.4 on the laptop, 3.8 to 5.5 on the
+      machines and every 64 KiB AEAD row over it: 1.9 to 2.4 on the laptop, 1.8 to 4.8 on the
       server.
 - [ ] The diff has passed the [reviewer checklist](#reviewer-checklist).
 - [ ] After the switch, the module runs on production traffic for a soak period (two weeks for a

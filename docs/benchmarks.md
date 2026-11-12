@@ -2,10 +2,10 @@
 
 Both libraries are measured through the C ABI with identical workloads, so a row of the results
 table compares what a C caller would see from `libekicore` and from `libekicore_rs` for the same
-call. The [results](#results) hold one run on each of two machines, an Apple M1 Pro laptop and a
-virtual server with an AMD EPYC CPU; [Machines](#machines) says how far the figures can be
-trusted. The two machines disagree about more than the absolute times, and that disagreement is
-the main thing the tables show.
+call. Each library uses the widest instructions it has code for on the CPU it runs on, so the
+comparison is head to head. The [results](#results) cover two machines, an Apple M1 Pro laptop
+and a virtual server with an AMD EPYC CPU, and [Machines](#machines) says how far the figures can
+be trusted.
 
 ## Workloads
 
@@ -40,6 +40,26 @@ linker's stubs. That matters, if at all, only for the smallest workloads.
 
 Benchmark names are the same in both suites (`hmac/sha256/64`, `aead_seal/aes-256-gcm/1024`,
 ...), and the script joins the two result sets on them.
+
+### Which CPU instructions each library uses
+
+OpenSSL picks its code path at run time from the features the CPU reports. The RustCrypto crates
+do the same, with one catch: on x86 the `aes` and `chacha20` crates compile their widest back
+ends (AES with VAES on 256-bit and 512-bit registers, ChaCha20 with AVX-512) only when a build
+flag asks for them. [`.cargo/config.toml`](../.cargo/config.toml) sets those flags for every
+build in this workspace. Run-time detection stays on, so the library still runs on a CPU without
+those instructions and uses the narrower back ends there. On the server's 64 KiB inputs the
+flags roughly halved the Rust library's ChaCha20-Poly1305 times and took about a tenth off its
+AES-256-GCM times; at 1 KiB they changed little.
+
+Two crates have no wide back end to switch on. `polyval`, which computes the GCM hash,
+multiplies on 128-bit registers, four blocks at a time. `poly1305` has an AVX2 back end on x86
+and only portable code on ARM. The `aes-gcm` crate also passes over the data twice, once to
+encrypt and once to hash, where OpenSSL's assembly does both in one pass.
+
+Turning instruction sets on for the whole build at compile time is not part of the comparison.
+On the server, rustc 1.99.1 crashed while compiling the `p256` crate both with
+`-C target-cpu=native` and with the AVX-512 features named one by one.
 
 ## Run it
 
@@ -77,10 +97,10 @@ library spends almost all of its time inside its back end: OpenSSL 3 for `libeki
 RustCrypto crates (`hmac`, `hkdf`, `sha2`, `aes-gcm`, `chacha20poly1305`) for `libekicore_rs`.
 
 OpenSSL uses hand-written assembly for AES-GCM, ChaCha20-Poly1305 and SHA-256 on common CPUs. The
-RustCrypto crates use CPU intrinsics where they have a backend for the CPU and portable Rust
-otherwise, and which of the two applies differs per primitive and per architecture. A ratio far
-from 1.0 therefore says which back end has the better code path for that primitive on that CPU,
-and it can turn around on another machine.
+RustCrypto crates use CPU intrinsics where they have a back end for the CPU and portable Rust
+otherwise ([above](#which-cpu-instructions-each-library-uses)). A ratio far from 1.0 therefore
+says which back end has the better code path for that primitive on that CPU, and it can turn
+around on another machine.
 
 The wrapper code of the two libraries matters only where the work per call is small (HMAC over 64
 bytes, HKDF). There the per-call overhead of the boundary is part of what a caller pays. In the
@@ -92,7 +112,8 @@ found, so record it with every run.
 
 ## Machines
 
-Each recorded run is the last of three that I took within ten minutes on its machine.
+Each figure in the results is the median of three runs of the script, taken within ten minutes
+on its machine.
 
 | | Apple M1 Pro laptop | AMD EPYC virtual server |
 |---|---|---|
@@ -102,66 +123,61 @@ Each recorded run is the last of three that I took within ten minutes on its mac
 | C++ compiler | Apple clang 21.0.0 (clang-2100.1.1.101) | GCC 14.2.0 |
 | C++ flags | CMake Release: `-O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden -fexceptions` | the same, and `-fstack-protector-strong -D_FORTIFY_SOURCE=2` |
 | Rust toolchain | rustc 1.99.1 | rustc 1.99.1 |
-| Rust profile | bench (release settings), no `RUSTFLAGS` | the same |
+| Rust profile | bench (release settings); the flags of `.cargo/config.toml` do not apply on ARM | bench (release settings) with `--cfg aes_backend="avx512" --cfg chacha20_avx512` |
 | OpenSSL | 3.5.9 (Homebrew) | 3.5.6 (Debian) |
 | Crate versions | aes-gcm 0.11.1, chacha20poly1305 0.11.0, hmac 0.13.0, hkdf 0.13.0, sha2 0.11.1 | the same |
 
 The laptop was on mains power but not idle. Other applications kept about two and a half cores
-busy for the whole run, and the load average was 6.3 when it started and when it ended. Its
-figures are therefore noisier than a quiet machine would give. The run before the recorded one,
-under the same load, agreed with it within about 6% on every time and 0.14 on every ratio. The
-first of the three started while the load was still falling from a heavier job and differed
-more: by up to 16% on a `libekicore` time, 23% on a `libekicore_rs` time and 0.46 on a ratio
-(ChaCha20-Poly1305 seal at 1 KiB, 1.79 against 1.33).
+busy during the runs. Across its three runs the `libekicore` times of a row differ by up to 16%
+and the `libekicore_rs` times by up to 9%, except ChaCha20-Poly1305 seal at 1 KiB, where one run
+was 23% slower than the other two.
 
-The server was idle, with a load average of 0.05 before the first run, and the hypervisor took
-0.03 s of steal time over the three runs. It is still a virtual machine on shared hardware. Its
-`libekicore_rs` times agree within about 6% across the three runs. Its `libekicore` times, each
-the mean of one Google Benchmark run, moved more: within about 20% on every row but one, and on
-AES-256-GCM seal at 1 KiB the first run gave 1,409 ns where the other two gave 944 and 1,048.
-That row's ratio ranges from 0.59 to 0.88 over the three runs, and the ratios of the two 64 KiB
-AES-256-GCM rows from 4.5 to 5.6.
+The server was idle, with a load average of 0.1 before the first run, and the hypervisor took
+0.02 s of steal time over the three runs. It is still a virtual machine on shared hardware.
+Across its three runs the `libekicore_rs` times of a row differ by up to 12%. The `libekicore`
+times, each the mean of one Google Benchmark run, differ by up to 22%, except HMAC over 64 bytes,
+where one run gave 1,747 ns against 1,073 and 1,123.
 
 On both machines, read the ratios to one decimal place at best.
 
 ## Results
 
-The rows are the ones [`scripts/bench.sh`](../scripts/bench.sh) prints. Each table is one run of
-that script on a machine described under [Machines](#machines).
+The rows are the ones [`scripts/bench.sh`](../scripts/bench.sh) prints, for the machines
+described under [Machines](#machines).
 
 ### Apple M1 Pro laptop
 
 | Workload | libekicore ns/op | libekicore_rs ns/op | ratio | MiB/s |
 |---|---:|---:|---:|---:|
-| HMAC-SHA256, 64 B | 1,266.2 | 218.5 | 0.17 | 279 |
-| HMAC-SHA256, 4 KiB | 3,533.5 | 2,577.6 | 0.73 | 1,515 |
-| HKDF-SHA256, 32 B output | 2,769.5 | 389.4 | 0.14 | 78 |
-| AES-256-GCM seal, 1 KiB | 941.2 | 1,185.4 | 1.26 | 824 |
-| AES-256-GCM seal, 64 KiB | 12,898.8 | 23,959.5 | 1.86 | 2,609 |
-| AES-256-GCM open, 1 KiB | 923.1 | 1,168.0 | 1.27 | 836 |
-| AES-256-GCM open, 64 KiB | 12,610.3 | 23,726.1 | 1.88 | 2,634 |
-| ChaCha20-Poly1305 seal, 1 KiB | 1,654.6 | 2,203.1 | 1.33 | 443 |
+| HMAC-SHA256, 64 B | 1,266.2 | 218.0 | 0.17 | 280 |
+| HMAC-SHA256, 4 KiB | 3,533.5 | 2,570.0 | 0.73 | 1,520 |
+| HKDF-SHA256, 32 B output | 2,769.5 | 389.1 | 0.14 | 78 |
+| AES-256-GCM seal, 1 KiB | 931.7 | 1,176.0 | 1.26 | 830 |
+| AES-256-GCM seal, 64 KiB | 12,898.8 | 23,876.8 | 1.85 | 2,618 |
+| AES-256-GCM open, 1 KiB | 923.1 | 1,170.6 | 1.27 | 834 |
+| AES-256-GCM open, 64 KiB | 12,610.3 | 23,484.2 | 1.86 | 2,661 |
+| ChaCha20-Poly1305 seal, 1 KiB | 1,654.6 | 2,205.2 | 1.33 | 443 |
 | ChaCha20-Poly1305 seal, 64 KiB | 48,541.8 | 117,514.9 | 2.42 | 532 |
-| ChaCha20-Poly1305 open, 1 KiB | 1,750.9 | 2,203.0 | 1.26 | 443 |
-| ChaCha20-Poly1305 open, 64 KiB | 47,308.9 | 114,602.4 | 2.42 | 545 |
+| ChaCha20-Poly1305 open, 1 KiB | 1,650.5 | 2,204.2 | 1.34 | 443 |
+| ChaCha20-Poly1305 open, 64 KiB | 47,308.9 | 115,099.7 | 2.43 | 543 |
 
 ### AMD EPYC virtual server
 
 | Workload | libekicore ns/op | libekicore_rs ns/op | ratio | MiB/s |
 |---|---:|---:|---:|---:|
-| HMAC-SHA256, 64 B | 1,122.2 | 286.5 | 0.26 | 213 |
-| HMAC-SHA256, 4 KiB | 3,676.4 | 2,855.8 | 0.78 | 1,368 |
-| HKDF-SHA256, 32 B output | 2,383.1 | 497.1 | 0.21 | 61 |
-| AES-256-GCM seal, 1 KiB | 1,048.3 | 879.5 | 0.84 | 1,110 |
-| AES-256-GCM seal, 64 KiB | 4,836.6 | 26,570.5 | 5.49 | 2,352 |
-| AES-256-GCM open, 1 KiB | 1,012.6 | 812.7 | 0.80 | 1,202 |
-| AES-256-GCM open, 64 KiB | 4,917.9 | 25,631.2 | 5.21 | 2,438 |
-| ChaCha20-Poly1305 seal, 1 KiB | 1,375.8 | 2,713.0 | 1.97 | 360 |
-| ChaCha20-Poly1305 seal, 64 KiB | 18,068.2 | 71,839.3 | 3.98 | 870 |
-| ChaCha20-Poly1305 open, 1 KiB | 1,365.1 | 2,717.8 | 1.99 | 359 |
-| ChaCha20-Poly1305 open, 64 KiB | 18,406.8 | 69,767.0 | 3.79 | 896 |
+| HMAC-SHA256, 64 B | 1,123.0 | 278.0 | 0.25 | 220 |
+| HMAC-SHA256, 4 KiB | 3,651.9 | 2,765.1 | 0.76 | 1,413 |
+| HKDF-SHA256, 32 B output | 2,332.2 | 472.4 | 0.20 | 65 |
+| AES-256-GCM seal, 1 KiB | 933.2 | 871.5 | 0.93 | 1,121 |
+| AES-256-GCM seal, 64 KiB | 5,004.5 | 23,608.5 | 4.72 | 2,647 |
+| AES-256-GCM open, 1 KiB | 976.4 | 861.9 | 0.88 | 1,133 |
+| AES-256-GCM open, 64 KiB | 4,979.9 | 23,770.5 | 4.77 | 2,629 |
+| ChaCha20-Poly1305 seal, 1 KiB | 1,386.1 | 2,198.4 | 1.59 | 444 |
+| ChaCha20-Poly1305 seal, 64 KiB | 17,940.6 | 32,055.8 | 1.79 | 1,950 |
+| ChaCha20-Poly1305 open, 1 KiB | 1,431.8 | 2,252.3 | 1.57 | 434 |
+| ChaCha20-Poly1305 open, 64 KiB | 17,585.7 | 33,035.4 | 1.88 | 1,892 |
 
-### What the two runs show
+### What the results show
 
 - On the two small calls the Rust library is several times faster on both machines. HMAC over
   64 bytes takes it about a sixth of the C++ library's time on the laptop and a quarter on the
@@ -170,18 +186,19 @@ that script on a machine described under [Machines](#machines).
   where the time goes.
 - HMAC over 4 KiB takes the Rust library about three quarters of the C++ library's time on both
   machines.
-- On 64 KiB inputs the C++ library is faster for both AEAD algorithms on both machines, and by
-  how much depends on the CPU. For AES-256-GCM the ratio is about 1.9 on the laptop and above 5
-  on the server, where `libekicore` seals 64 KiB in under 5 microseconds (about 12,900 MiB/s
-  against 2,350 for `libekicore_rs`). For ChaCha20-Poly1305 it is about 2.4 and about 4. At this
-  size nearly all the time is inside the cipher, so these rows compare OpenSSL's code for each
-  CPU with RustCrypto's. I have not checked which code path either back end took.
+- ChaCha20-Poly1305 is faster in the C++ library on both machines: by about 1.3 at 1 KiB and 2.4
+  at 64 KiB on the laptop, and by about 1.6 and 1.8 to 1.9 on the server.
+- AES-256-GCM on 64 KiB inputs is where the libraries are furthest apart. The ratio is about 1.9
+  on the laptop and 4.7 to 4.8 on the server, where `libekicore` seals 64 KiB in about 5
+  microseconds (about 12,500 MiB/s against 2,650). The Rust library runs AES on 512-bit registers
+  there too; what it lacks is a wide GCM hash and the single pass. Masking the CPU's wide AES and
+  carry-less multiply instructions off for OpenSSL (`OPENSSL_ia32cap`) brings `openssl speed` on
+  this workload down from 16 GB/s to between 3 and 4, so those instructions are where its lead
+  comes from.
 - At 1 KiB the machines disagree about AES-256-GCM: the C++ library is faster on the laptop
-  (about 1.3) and the Rust library is faster on the server (about 0.8, on the server's noisiest
-  rows). ChaCha20-Poly1305 at 1 KiB is faster in the C++ library on both, by about 1.3 and
-  about 2.
+  (about 1.3) and the Rust library is slightly faster on the server (about 0.9).
 - The cutover gate of the [migration plan](migration-plan.md#cutover-gate-per-module) allows a
   ratio of at most 1.10. HMAC and HKDF are under it on both machines. AES-256-GCM at 1 KiB is
-  under it on the server only. Every other AEAD row is over it on both, by the widest margin on
-  the server. The gate asks for a measurement on production hardware; neither machine is that,
-  though the server is the nearer of the two.
+  under it on the server only. Every other AEAD row is over it on both. The gate asks for a
+  measurement on production hardware; neither machine is that, though the server is the nearer
+  of the two.
