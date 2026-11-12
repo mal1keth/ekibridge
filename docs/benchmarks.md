@@ -2,8 +2,10 @@
 
 Both libraries are measured through the C ABI with identical workloads, so a row of the results
 table compares what a C caller would see from `libekicore` and from `libekicore_rs` for the same
-call. The [results table](#results) holds one run, on an Apple M1 Pro laptop that was not idle;
-[Machine](#machine) says how far its figures can be trusted.
+call. The [results](#results) hold one run on each of two machines, an Apple M1 Pro laptop and a
+virtual server with an AMD EPYC CPU; [Machines](#machines) says how far the figures can be
+trusted. The two machines disagree about more than the absolute times, and that disagreement is
+the main thing the tables show.
 
 ## Workloads
 
@@ -88,35 +90,46 @@ C++ library the wrapper code also fetches its OpenSSL algorithm on every call (`
 The crate versions are pinned in `core-rs/Cargo.toml`. The OpenSSL version is whatever the build
 found, so record it with every run.
 
-## Machine
+## Machines
 
-The recorded run is the last of three that I took within ten minutes on this machine.
+Each recorded run is the last of three that I took within ten minutes on its machine.
 
-| | |
-|---|---|
-| Date | 2026-11-12 |
-| CPU | Apple M1 Pro, 6 performance and 2 efficiency cores; macOS decides frequency and core placement, and neither can be fixed |
-| OS | macOS 26.2 (25C56) |
-| C++ compiler | Apple clang 21.0.0 (clang-2100.1.1.101) |
-| C++ flags | CMake Release: `-O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden -fexceptions` |
-| Rust toolchain | rustc 1.99.1 |
-| Rust profile | bench (release settings), no `RUSTFLAGS` |
-| OpenSSL | 3.5.9 (Homebrew) |
-| Crate versions | aes-gcm 0.11.1, chacha20poly1305 0.11.0, hmac 0.13.0, hkdf 0.13.0, sha2 0.11.1 |
+| | Apple M1 Pro laptop | AMD EPYC virtual server |
+|---|---|---|
+| Date | 2026-11-12 | 2026-11-12 |
+| CPU | Apple M1 Pro, 6 performance and 2 efficiency cores; macOS decides frequency and core placement, and neither can be fixed | AMD EPYC 9645, 4 virtual CPUs under KVM; the CPU reports AES-NI, VAES, VPCLMULQDQ, AVX-512 and the SHA extensions |
+| OS | macOS 26.2 (25C56) | Debian 13, Linux 6.12 |
+| C++ compiler | Apple clang 21.0.0 (clang-2100.1.1.101) | GCC 14.2.0 |
+| C++ flags | CMake Release: `-O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden -fexceptions` | the same, and `-fstack-protector-strong -D_FORTIFY_SOURCE=2` |
+| Rust toolchain | rustc 1.99.1 | rustc 1.99.1 |
+| Rust profile | bench (release settings), no `RUSTFLAGS` | the same |
+| OpenSSL | 3.5.9 (Homebrew) | 3.5.6 (Debian) |
+| Crate versions | aes-gcm 0.11.1, chacha20poly1305 0.11.0, hmac 0.13.0, hkdf 0.13.0, sha2 0.11.1 | the same |
 
 The laptop was on mains power but not idle. Other applications kept about two and a half cores
-busy for the whole run, and the load average was 6.3 when it started and when it ended. The
-figures are therefore noisier than a quiet machine would give. The run before this one, under the
-same load, agreed with it within 6% on every time and within 0.14 on every ratio. The first of
-the three started while the load was still falling from a heavier job and differed more: by up
-to 16% on a `libekicore` time, 23% on a `libekicore_rs` time and 0.46 on a ratio
-(ChaCha20-Poly1305 seal at 1 KiB, 1.79 against 1.33). Read the ratios to one decimal place at
-best.
+busy for the whole run, and the load average was 6.3 when it started and when it ended. Its
+figures are therefore noisier than a quiet machine would give. The run before the recorded one,
+under the same load, agreed with it within about 6% on every time and 0.14 on every ratio. The
+first of the three started while the load was still falling from a heavier job and differed
+more: by up to 16% on a `libekicore` time, 23% on a `libekicore_rs` time and 0.46 on a ratio
+(ChaCha20-Poly1305 seal at 1 KiB, 1.79 against 1.33).
+
+The server was idle, with a load average of 0.05 before the first run, and the hypervisor took
+0.03 s of steal time over the three runs. It is still a virtual machine on shared hardware. Its
+`libekicore_rs` times agree within about 6% across the three runs. Its `libekicore` times, each
+the mean of one Google Benchmark run, moved more: within about 20% on every row but one, and on
+AES-256-GCM seal at 1 KiB the first run gave 1,409 ns where the other two gave 944 and 1,048.
+That row's ratio ranges from 0.59 to 0.88 over the three runs, and the ratios of the two 64 KiB
+AES-256-GCM rows from 4.5 to 5.6.
+
+On both machines, read the ratios to one decimal place at best.
 
 ## Results
 
-The rows are the ones [`scripts/bench.sh`](../scripts/bench.sh) prints. The figures come from one
-run of that script on the machine described under [Machine](#machine).
+The rows are the ones [`scripts/bench.sh`](../scripts/bench.sh) prints. Each table is one run of
+that script on a machine described under [Machines](#machines).
+
+### Apple M1 Pro laptop
 
 | Workload | libekicore ns/op | libekicore_rs ns/op | ratio | MiB/s |
 |---|---:|---:|---:|---:|
@@ -132,17 +145,43 @@ run of that script on the machine described under [Machine](#machine).
 | ChaCha20-Poly1305 open, 1 KiB | 1,750.9 | 2,203.0 | 1.26 | 443 |
 | ChaCha20-Poly1305 open, 64 KiB | 47,308.9 | 114,602.4 | 2.42 | 545 |
 
-What this run shows, for this machine only:
+### AMD EPYC virtual server
 
-- On the two small calls the Rust library is several times faster: HMAC over 64 bytes takes
-  about a sixth of the C++ library's time and HKDF about a seventh. That fits the algorithm
-  fetch the C++ wrapper does on every call, described above, but I have not profiled either
-  library to confirm where the time goes.
-- HMAC over 4 KiB takes the Rust library about three quarters of the C++ library's time.
-- Both AEAD algorithms are faster in the C++ library, and the gap grows with the input: the ratio
-  is about 1.3 at 1 KiB for both, and at 64 KiB about 1.9 for AES-256-GCM and about 2.4 for
-  ChaCha20-Poly1305. At 64 KiB nearly all the time is inside the cipher, so those rows compare
-  OpenSSL's code for this CPU with RustCrypto's.
+| Workload | libekicore ns/op | libekicore_rs ns/op | ratio | MiB/s |
+|---|---:|---:|---:|---:|
+| HMAC-SHA256, 64 B | 1,122.2 | 286.5 | 0.26 | 213 |
+| HMAC-SHA256, 4 KiB | 3,676.4 | 2,855.8 | 0.78 | 1,368 |
+| HKDF-SHA256, 32 B output | 2,383.1 | 497.1 | 0.21 | 61 |
+| AES-256-GCM seal, 1 KiB | 1,048.3 | 879.5 | 0.84 | 1,110 |
+| AES-256-GCM seal, 64 KiB | 4,836.6 | 26,570.5 | 5.49 | 2,352 |
+| AES-256-GCM open, 1 KiB | 1,012.6 | 812.7 | 0.80 | 1,202 |
+| AES-256-GCM open, 64 KiB | 4,917.9 | 25,631.2 | 5.21 | 2,438 |
+| ChaCha20-Poly1305 seal, 1 KiB | 1,375.8 | 2,713.0 | 1.97 | 360 |
+| ChaCha20-Poly1305 seal, 64 KiB | 18,068.2 | 71,839.3 | 3.98 | 870 |
+| ChaCha20-Poly1305 open, 1 KiB | 1,365.1 | 2,717.8 | 1.99 | 359 |
+| ChaCha20-Poly1305 open, 64 KiB | 18,406.8 | 69,767.0 | 3.79 | 896 |
+
+### What the two runs show
+
+- On the two small calls the Rust library is several times faster on both machines. HMAC over
+  64 bytes takes it about a sixth of the C++ library's time on the laptop and a quarter on the
+  server; HKDF takes it about a seventh and a fifth. That fits the algorithm fetch the C++
+  wrapper does on every call, described above, but I have not profiled either library to confirm
+  where the time goes.
+- HMAC over 4 KiB takes the Rust library about three quarters of the C++ library's time on both
+  machines.
+- On 64 KiB inputs the C++ library is faster for both AEAD algorithms on both machines, and by
+  how much depends on the CPU. For AES-256-GCM the ratio is about 1.9 on the laptop and above 5
+  on the server, where `libekicore` seals 64 KiB in under 5 microseconds (about 12,900 MiB/s
+  against 2,350 for `libekicore_rs`). For ChaCha20-Poly1305 it is about 2.4 and about 4. At this
+  size nearly all the time is inside the cipher, so these rows compare OpenSSL's code for each
+  CPU with RustCrypto's. I have not checked which code path either back end took.
+- At 1 KiB the machines disagree about AES-256-GCM: the C++ library is faster on the laptop
+  (about 1.3) and the Rust library is faster on the server (about 0.8, on the server's noisiest
+  rows). ChaCha20-Poly1305 at 1 KiB is faster in the C++ library on both, by about 1.3 and
+  about 2.
 - The cutover gate of the [migration plan](migration-plan.md#cutover-gate-per-module) allows a
-  ratio of at most 1.10. HMAC and HKDF are under it here and every AEAD row is over it. The gate
-  asks for a measurement on production hardware, which this laptop is not.
+  ratio of at most 1.10. HMAC and HKDF are under it on both machines. AES-256-GCM at 1 KiB is
+  under it on the server only. Every other AEAD row is over it on both, by the widest margin on
+  the server. The gate asks for a measurement on production hardware; neither machine is that,
+  though the server is the nearer of the two.
