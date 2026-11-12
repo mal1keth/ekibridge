@@ -142,7 +142,8 @@ A module moves to the Rust implementation only when every item is checked.
       mean of one run (C++). Those are different statistics, so the ratio is approximate. Second,
       the repository has workloads for HMAC, HKDF and AEAD only. ECDSA verification, the hybrid
       KEM and the key-store steps (5 to 7) have none, so the item cannot be checked for them
-      until workloads are written.
+      until workloads are written. The one run recorded so far, on a laptop and not on production
+      hardware, has the HMAC and HKDF rows under 1.10 and every AEAD row over it (1.26 to 2.42).
 - [ ] The diff has passed the [reviewer checklist](#reviewer-checklist).
 - [ ] After the switch, the module runs on production traffic for a soak period (two weeks for a
       stateless module, four for a key store step) with no rise in `EKI_ERR_INTERNAL` or

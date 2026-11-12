@@ -29,7 +29,9 @@ Every exported function is implemented in both libraries and passes the conforma
 first fuzzing campaign of both libraries found nothing. The Rust `ffi_status` target fell short
 of its planned 200000 executions on the Mac and reached them in a later run on Linux
 ([findings](docs/findings.md)). The ABI is at version 2, which added key lifecycle states, the
-audit log and dual control of destroy. The benchmark table is not filled in yet.
+audit log and dual control of destroy. One benchmark run is recorded, on an Apple M1 Pro: the
+Rust library is several times faster on small HMAC and HKDF calls and 1.3 to 2.4 times slower on
+AEAD ([benchmarks](docs/benchmarks.md)).
 
 I develop and test on macOS (Apple silicon). On Linux the CI workflows build and test the
 implementation on Ubuntu 24.04, and the badges above show whether they pass. By hand I have run
